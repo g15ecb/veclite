@@ -27,7 +27,7 @@ clang -O2 -Wall -Wextra -Werror -fsanitize=address,undefined -Iinclude tests/c_h
 ./build/c_host
 
 echo "== code mutants must fail"
-for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE; do
+for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE QUERY_MIX; do
   mkdir -p "build/mut_$m"
   mojo build -D "VDB_MUTANT_$m=true" src/vdb.mojo --emit shared-lib -o "build/mut_$m/libvdb.dylib"
   clang -O2 -Iinclude tests/c_host.c -L"build/mut_$m" -lvdb -Wl,-rpath,"$PWD/build/mut_$m" -Wl,-rpath,"$L" -o "build/mut_$m/c_host"
@@ -36,5 +36,5 @@ for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE; do
 done
 
 echo "== conformance + bench smoke"
-python -I bench/bench.py 20000 64 | grep min_recall
+python -I bench/bench.py 20000 1536 1,8 | grep min_recall
 echo "ALL CHECKS PASSED"

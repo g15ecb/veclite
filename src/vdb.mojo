@@ -1,6 +1,6 @@
 from max.algorithm import parallelize
 from std.runtime import initialize_runtime
-from std.sys import simd_width_of, get_defined_bool
+from std.sys import simd_width_of, get_defined_bool, get_defined_int
 from std.utils.numerics import isfinite
 from std.math import sqrt
 
@@ -18,29 +18,55 @@ comptime E_CHUNKS: Int32 = -10
 comptime E_FILTER: Int32 = -11
 comptime E_DATA_NONFINITE: Int32 = -12
 comptime E_DATA_ZERO: Int32 = -13
+comptime E_BATCH: Int32 = -14
 
-comptime METRIC_L2: Int32 = 0
-comptime METRIC_DOT: Int32 = 1
-comptime METRIC_COSINE: Int32 = 2
+comptime L2: Int32 = 0
+comptime DOT: Int32 = 1
+comptime COSINE: Int32 = 2
 
 comptime MAX_DIM: Int64 = 65536
 comptime MAX_K: Int64 = 4096
 comptime MAX_N: Int64 = 1 << 40
 comptime MAX_ELEMS: Int64 = 1 << 42
 comptime MAX_CHUNKS: Int64 = 4096
-comptime ABI_VERSION: Int32 = 1
+comptime MAX_BATCH: Int64 = 4096
 
 comptime MUTANT_NO_TIE_BREAK = get_defined_bool["VDB_MUTANT_NO_TIE_BREAK"]()
 comptime MUTANT_POST_FILTER = get_defined_bool["VDB_MUTANT_POST_FILTER"]()
 comptime MUTANT_LOCAL_K_MINUS_ONE = get_defined_bool["VDB_MUTANT_LOCAL_K_MINUS_ONE"]()
+comptime MUTANT_QUERY_MIX = get_defined_bool["VDB_MUTANT_QUERY_MIX"]()
 
-comptime W = simd_width_of[DType.float32]() * 4
+comptime W = simd_width_of[DType.float32]()
+comptime V = SIMD[DType.float32, W]
+comptime QT = get_defined_int["VDB_QT", 4]()
+comptime RT = get_defined_int["VDB_RT", 4]()
+comptime BLOCK_BYTES = 1 << 18
 
 comptime FPtr = Pointer[Float32, ImmUntrackedOrigin]
 comptime FMut = Pointer[Float32, MutUntrackedOrigin]
 comptime IPtr = Pointer[Int64, ImmUntrackedOrigin]
 comptime IMut = Pointer[Int64, MutUntrackedOrigin]
 comptime BPtr = Pointer[UInt8, ImmUntrackedOrigin]
+
+
+def fptr(a: Int) -> FPtr:
+    return FPtr(unsafe_from_address=a)
+
+
+def fmut(a: Int) -> FMut:
+    return FMut(unsafe_from_address=a)
+
+
+def iptr(a: Int) -> IPtr:
+    return IPtr(unsafe_from_address=a)
+
+
+def imut(a: Int) -> IMut:
+    return IMut(unsafe_from_address=a)
+
+
+def bptr(a: Int) -> BPtr:
+    return BPtr(unsafe_from_address=a)
 
 
 @inline(.always)
@@ -51,86 +77,195 @@ def cand_le(sa: Float32, ia: Int64, sb: Float32, ib: Int64) -> Bool:
 
 
 @inline(.always)
-def bstep(
-    scores: FMut, ids: IMut, length: Int, cap: Int, s: Float32, i: Int64
-) -> Int:
-    if cap <= 0:
-        return 0
-    if length == cap and not cand_le(s, i, scores[unsafe_offset=cap - 1], ids[unsafe_offset=cap - 1]):
+def bstep(scores: FMut, ids: IMut, length: Int, cap: Int, s: Float32, i: Int64) -> Int:
+    if cap <= 0 or (length == cap and not cand_le(s, i, scores[unsafe_offset=cap - 1], ids[unsafe_offset=cap - 1])):
         return length
     var p = 0
     while p < length and not cand_le(s, i, scores[unsafe_offset=p], ids[unsafe_offset=p]):
         p += 1
-    if p >= cap:
-        return length
-    var new_len = length + 1 if length < cap else cap
-    var j = new_len - 1
+    var j = min(length, cap - 1)
     while j > p:
         scores[unsafe_offset=j] = scores[unsafe_offset=j - 1]
         ids[unsafe_offset=j] = ids[unsafe_offset=j - 1]
         j -= 1
     scores[unsafe_offset=p] = s
     ids[unsafe_offset=p] = i
-    return new_len
+    return min(length + 1, cap)
 
 
 @inline(.always)
-def dot_l2(a: FPtr, b: FPtr, dim: Int) -> Tuple[Float32, Float32, Float32]:
-    var acc_dot = SIMD[DType.float32, W](0)
-    var acc_l2 = SIMD[DType.float32, W](0)
-    var acc_nb = SIMD[DType.float32, W](0)
+def dots[NQ: Int, NR: Int, NORM: Bool](q: FPtr, r: Array[FPtr, NR], dim: Int) -> Array[Float32, (NQ + 1) * NR]:
+    var acc = Array[V, (NQ + 1) * NR](fill=V(0))
     var d = 0
     while d + W <= dim:
-        var va = a.unsafe_offset(d).unsafe_load[width=W]()
-        var vb = b.unsafe_offset(d).unsafe_load[width=W]()
-        var diff = va - vb
-        acc_dot += va * vb
-        acc_l2 += diff * diff
-        acc_nb += vb * vb
+        comptime for j in range(NR):
+            var b = r[j].unsafe_offset(d).unsafe_load[width=W]()
+            comptime for i in range(NQ):
+                acc[i * NR + j] = q.unsafe_offset(i * dim + d).unsafe_load[width=W]().fma(b, acc[i * NR + j])
+            comptime if NORM:
+                acc[NQ * NR + j] = b.fma(b, acc[NQ * NR + j])
         d += W
-    var sd = acc_dot.reduce_add()
-    var sl = acc_l2.reduce_add()
-    var sn = acc_nb.reduce_add()
-    while d < dim:
-        var x = a[unsafe_offset=d]
-        var y = b[unsafe_offset=d]
-        sd += x * y
-        sl += (x - y) * (x - y)
-        sn += y * y
-        d += 1
-    return (sd, sl, sn)
+    var out = Array[Float32, (NQ + 1) * NR](fill=0)
+    comptime for t in range((NQ + 1) * NR):
+        out[t] = acc[t].reduce_add()
+    for e in range(d, dim):
+        comptime for j in range(NR):
+            var b = r[j][unsafe_offset=e]
+            comptime for i in range(NQ):
+                out[i * NR + j] = q[unsafe_offset=i * dim + e].fma(b, out[i * NR + j])
+            comptime if NORM:
+                out[NQ * NR + j] = b.fma(b, out[NQ * NR + j])
+    return out^
 
 
 @inline(.always)
-def row_score(q: FPtr, row: FPtr, dim: Int, metric: Int32, qnorm: Float32) -> Float32:
-    var r = dot_l2(q, row, dim)
-    if metric == METRIC_L2:
-        return r[1]
-    if metric == METRIC_DOT:
-        return -r[0]
-    return Float32(1) - r[0] / (qnorm * sqrt(r[2]))
+def sqnorm(p: FPtr, dim: Int) -> Float32:
+    return dots[0, 1, True](p, Array[FPtr, 1](fill=p), dim)[0]
 
 
 @inline(.always)
-def eligible(live: BPtr, tags: IPtr, i: Int, filter_on: Int32, filter_tag: Int64) -> Bool:
-    if live[unsafe_offset=i] == 0:
-        return False
-    if filter_on == 0:
-        return True
-    return tags[unsafe_offset=i] == filter_tag
+def finish[metric: Int32](dot: Float32, qn2: Float32, rn2: Float32) -> Float32:
+    comptime if metric == L2:
+        var v = qn2 + rn2 - 2 * dot
+        return Float32(0) if v < 0 else v
+    elif metric == DOT:
+        return -dot
+    return 1 - dot / (sqrt(qn2) * sqrt(rn2))
+
+
+@fieldwise_init
+struct Job(ImplicitlyCopyable, Movable):
+    var data: FPtr
+    var n: Int
+    var dim: Int
+    var tags: IPtr
+    var live: BPtr
+    var queries: FPtr
+    var nq: Int
+    var qn2: FPtr
+    var filter_on: BPtr
+    var filter_tags: IPtr
+    var filtered: Bool
+    var k: Int
+    var nc: Int
+    var buf_scores: FMut
+    var buf_ids: IMut
+    var buf_len: IMut
+    var dst: FMut
+
+    @inline(.always)
+    def matches(self, f: Int, i: Int) -> Bool:
+        return self.live[unsafe_offset=i] != 0 and (
+            not self.filtered or self.filter_on[unsafe_offset=f] == 0 or self.tags[unsafe_offset=i] == self.filter_tags[unsafe_offset=f]
+        )
+
+    @inline(.always)
+    def scan_ok[STORE: Bool](self, q: Int, i: Int) -> Bool:
+        comptime if STORE:
+            return True
+        comptime if MUTANT_POST_FILTER:
+            return self.live[unsafe_offset=i] != 0
+        comptime if MUTANT_QUERY_MIX:
+            return self.matches(0, i)
+        return self.matches(q, i)
+
+    @inline(.always)
+    def row(self, i: Int) -> FPtr:
+        return self.data.unsafe_offset(i * self.dim)
 
 
 @inline(.always)
-def scan_eligible(live: BPtr, tags: IPtr, i: Int, filter_on: Int32, filter_tag: Int64) -> Bool:
-    comptime if MUTANT_POST_FILTER:
-        return live[unsafe_offset=i] != 0
-    return eligible(live, tags, i, filter_on, filter_tag)
+def do_tile[metric: Int32, NQ: Int, NR: Int, STORE: Bool](job: Job, c: Int, q0: Int, rows: IPtr) -> Int32:
+    var r = Array[FPtr, NR](fill=job.data)
+    comptime for j in range(NR):
+        r[j] = job.row(Int(rows[unsafe_offset=j]))
+    var t = dots[NQ, NR, metric != DOT](job.queries.unsafe_offset(q0 * job.dim), r, job.dim)
+    var cap = job.k - 1 if MUTANT_LOCAL_K_MINUS_ONE else job.k
+    comptime for i in range(NQ):
+        comptime for j in range(NR):
+            var q = q0 + i
+            var id = Int(rows[unsafe_offset=j])
+            if job.scan_ok[STORE](q, id):
+                var s = finish[metric](t[i * NR + j], job.qn2[unsafe_offset=q], t[NQ * NR + j])
+                if not isfinite(s):
+                    return E_SCORE_NONFINITE
+                comptime if STORE:
+                    job.dst[unsafe_offset=q * job.n + id] = s
+                else:
+                    var o = c * job.nq + q
+                    job.buf_len[unsafe_offset=o] = Int64(bstep(
+                        job.buf_scores.unsafe_offset(o * job.k), job.buf_ids.unsafe_offset(o * job.k),
+                        Int(job.buf_len[unsafe_offset=o]), cap, s, Int64(id),
+                    ))
+    return OK
 
 
-def validate_common(
-    data: Int, n: Int64, dim: Int64, tags: Int, live: Int, filter_on: Int32
-) -> Int32:
-    if data == 0 or live == 0:
+def scan_qtile[metric: Int32, NQ: Int, STORE: Bool](job: Job, c: Int, q0: Int, b0: Int, b1: Int, idx: IMut) -> Int32:
+    var m = 0
+    for r in range(b0, b1):
+        var hit = False
+        comptime for i in range(NQ):
+            hit = hit or job.scan_ok[STORE](q0 + i, r)
+        if hit:
+            idx[unsafe_offset=m] = Int64(r)
+            m += 1
+    var rows = iptr(Int(idx))
+    var j = 0
+    var st = OK
+    while st == OK and j + RT <= m:
+        st = do_tile[metric, NQ, RT, STORE](job, c, q0, rows.unsafe_offset(j))
+        j += RT
+    while st == OK and j < m:
+        st = do_tile[metric, NQ, 1, STORE](job, c, q0, rows.unsafe_offset(j))
+        j += 1
+    return st
+
+
+def run_chunk[metric: Int32, STORE: Bool](job: Job, c: Int) -> Int32:
+    var rb = max(RT, BLOCK_BYTES // (job.dim * 4))
+    var idx = List[Int64](length=rb, fill=0)
+    var pidx = imut(Int(idx.unsafe_ptr()))
+    var hi = (c + 1) * job.n // job.nc
+    for b0 in range(c * job.n // job.nc, hi, rb):
+        var b1 = min(b0 + rb, hi)
+        var q0 = 0
+        var st = OK
+        while st == OK and q0 + QT <= job.nq:
+            st = scan_qtile[metric, QT, STORE](job, c, q0, b0, b1, pidx)
+            q0 += QT
+        while st == OK and q0 < job.nq:
+            st = scan_qtile[metric, 1, STORE](job, c, q0, b0, b1, pidx)
+            q0 += 1
+        if st != OK:
+            return st
+    _ = idx^
+    return OK
+
+
+def run_all[metric: Int32, STORE: Bool](job: Job) -> Int32:
+    var status = List[Int32](length=job.nc, fill=OK)
+    var ps = Pointer[Int32, MutUntrackedOrigin](unsafe_from_address=Int(status.unsafe_ptr()))
+
+    def body(c: Int) {var}:
+        ps[unsafe_offset=c] = run_chunk[metric, STORE](job, c)
+
+    parallelize(body, job.nc)
+    for s in status:
+        if s != OK:
+            return s
+    return OK
+
+
+def run[STORE: Bool](job: Job, metric: Int32) -> Int32:
+    if metric == L2:
+        return run_all[L2, STORE](job)
+    if metric == DOT:
+        return run_all[DOT, STORE](job)
+    return run_all[COSINE, STORE](job)
+
+
+def check_shape(data: Int, n: Int64, dim: Int64) -> Int32:
+    if data == 0:
         return E_NULL
     if n < 0 or n > MAX_N:
         return E_N
@@ -138,194 +273,154 @@ def validate_common(
         return E_DIM
     if n * dim > MAX_ELEMS:
         return E_OVERFLOW
-    if filter_on != 0 and filter_on != 1:
-        return E_FILTER
-    if filter_on == 1 and tags == 0:
-        return E_NULL
     return OK
 
 
-def query_norm(query: FPtr, dim: Int, metric: Int32, mut status: Int32) -> Float32:
-    var ss: Float32 = 0
-    for d in range(dim):
-        var x = query[unsafe_offset=d]
-        if not isfinite(x):
-            status = E_QUERY_NONFINITE
-            return 0
-        ss += x * x
-    if not isfinite(ss):
-        status = E_QUERY_NONFINITE
-        return 0
-    var nrm = sqrt(ss)
-    if metric == METRIC_COSINE and not (nrm > 0):
-        status = E_QUERY_ZERO
-        return 0
-    status = OK
-    return nrm
+def check_metric(metric: Int32) -> Int32:
+    return OK if metric >= L2 and metric <= COSINE else E_METRIC
+
+
+def check_batch(nq: Int64) -> Int32:
+    return OK if nq > 0 and nq <= MAX_BATCH else E_BATCH
+
+
+def query_norms(queries: FPtr, nq: Int, dim: Int, metric: Int32, mut st: Int32) -> List[Float32]:
+    var qn2 = List[Float32](length=nq, fill=0)
+    for q in range(nq):
+        var ss = sqnorm(queries.unsafe_offset(q * dim), dim)
+        if not isfinite(ss):
+            st = E_QUERY_NONFINITE
+        elif metric == COSINE and not (ss > 0):
+            st = E_QUERY_ZERO
+        if st != OK:
+            return qn2^
+        qn2[q] = ss
+    return qn2^
 
 
 @export("vdb_abi_version")
 def vdb_abi_version() abi("C") -> Int32:
-    return ABI_VERSION
+    return 2
 
 
 @export("vdb_validate_rows")
-def vdb_validate_rows(
-    data_addr: Int, n: Int64, dim: Int64, metric: Int32, bad_row_addr: Int
-) abi("C") -> Int32:
-    if data_addr == 0 or bad_row_addr == 0:
-        return E_NULL
-    if n < 0 or n > MAX_N:
-        return E_N
-    if dim <= 0 or dim > MAX_DIM:
-        return E_DIM
-    if n * dim > MAX_ELEMS:
-        return E_OVERFLOW
-    if metric < METRIC_L2 or metric > METRIC_COSINE:
-        return E_METRIC
-    var data = FPtr(unsafe_from_address=data_addr)
-    var bad_row = IMut(unsafe_from_address=bad_row_addr)
+def vdb_validate_rows(data_addr: Int, n: Int64, dim: Int64, metric: Int32, bad_row_addr: Int) abi("C") -> Int32:
+    var st = check_shape(data_addr, n, dim)
+    if st == OK and bad_row_addr == 0:
+        st = E_NULL
+    if st == OK:
+        st = check_metric(metric)
+    if st != OK:
+        return st
+    var bad_row = imut(bad_row_addr)
     bad_row[unsafe_offset=0] = -1
-    var di = Int(dim)
     for r in range(Int(n)):
-        var row = data.unsafe_offset(r * di)
-        var ss: Float32 = 0
-        for d in range(di):
-            var x = row[unsafe_offset=d]
-            if not isfinite(x):
-                bad_row[unsafe_offset=0] = Int64(r)
-                return E_DATA_NONFINITE
-            ss += x * x
-        if not isfinite(ss):
+        var ss = sqnorm(fptr(data_addr).unsafe_offset(r * Int(dim)), Int(dim))
+        st = E_DATA_NONFINITE if not isfinite(ss) else (E_DATA_ZERO if metric == COSINE and not (ss > 0) else OK)
+        if st != OK:
             bad_row[unsafe_offset=0] = Int64(r)
-            return E_DATA_NONFINITE
-        if metric == METRIC_COSINE and not (ss > 0):
-            bad_row[unsafe_offset=0] = Int64(r)
-            return E_DATA_ZERO
+            return st
     return OK
 
 
 @export("vdb_scores")
 def vdb_scores(
-    data_addr: Int, n: Int64, dim: Int64, query_addr: Int, metric: Int32, out_addr: Int
+    data_addr: Int, n: Int64, dim: Int64, queries_addr: Int, nq: Int64, metric: Int32, out_addr: Int
 ) abi("C") -> Int32:
-    if data_addr == 0 or query_addr == 0 or out_addr == 0:
-        return E_NULL
-    if n < 0 or n > MAX_N:
-        return E_N
-    if dim <= 0 or dim > MAX_DIM:
-        return E_DIM
-    if n * dim > MAX_ELEMS:
-        return E_OVERFLOW
-    if metric < METRIC_L2 or metric > METRIC_COSINE:
-        return E_METRIC
-    var data = FPtr(unsafe_from_address=data_addr)
-    var query = FPtr(unsafe_from_address=query_addr)
-    var out_scores = FMut(unsafe_from_address=out_addr)
-    var st: Int32 = OK
-    var qn = query_norm(query, Int(dim), metric, st)
+    var st = check_shape(data_addr, n, dim)
+    if st == OK and (queries_addr == 0 or out_addr == 0):
+        st = E_NULL
+    if st == OK:
+        st = check_batch(nq)
+    if st == OK:
+        st = check_metric(metric)
     if st != OK:
         return st
-    var di = Int(dim)
-    for r in range(Int(n)):
-        out_scores[unsafe_offset=r] = row_score(query, data.unsafe_offset(r * di), di, metric, qn)
-    return OK
+    var qn2 = query_norms(fptr(queries_addr), Int(nq), Int(dim), metric, st)
+    if st != OK or n == 0:
+        return st
+    initialize_runtime()
+    var none = data_addr
+    st = run[True](
+        Job(
+            fptr(data_addr), Int(n), Int(dim), iptr(none), bptr(none), fptr(queries_addr), Int(nq),
+            fptr(Int(qn2.unsafe_ptr())), bptr(none), iptr(none), False, 1, 1,
+            fmut(out_addr), imut(out_addr), imut(out_addr), fmut(out_addr),
+        ),
+        metric,
+    )
+    _ = qn2^
+    return st
 
 
 @export("vdb_search")
 def vdb_search(
-    data_addr: Int,
-    n: Int64,
-    dim: Int64,
-    tags_addr: Int,
-    live_addr: Int,
-    query_addr: Int,
-    k: Int64,
-    metric: Int32,
-    filter_on: Int32,
-    filter_tag: Int64,
-    nchunks: Int64,
-    out_ids_addr: Int,
-    out_scores_addr: Int,
-    out_count_addr: Int,
+    data_addr: Int, n: Int64, dim: Int64, tags_addr: Int, live_addr: Int,
+    queries_addr: Int, nq: Int64, filter_on_addr: Int, filter_tags_addr: Int,
+    k: Int64, metric: Int32, nchunks: Int64,
+    out_ids_addr: Int, out_scores_addr: Int, out_counts_addr: Int,
 ) abi("C") -> Int32:
-    if out_count_addr != 0:
-        IMut(unsafe_from_address=out_count_addr)[unsafe_offset=0] = 0
-    var st = validate_common(data_addr, n, dim, tags_addr, live_addr, filter_on)
+    if out_counts_addr == 0:
+        return E_NULL
+    var st = check_batch(nq)
     if st != OK:
         return st
-    if query_addr == 0 or out_ids_addr == 0 or out_scores_addr == 0 or out_count_addr == 0:
-        return E_NULL
-    if k <= 0 or k > MAX_K:
-        return E_K
-    if metric < METRIC_L2 or metric > METRIC_COSINE:
-        return E_METRIC
-    if nchunks <= 0 or nchunks > MAX_CHUNKS:
-        return E_CHUNKS
-    var data = FPtr(unsafe_from_address=data_addr)
-    var tags = IPtr(unsafe_from_address=tags_addr if tags_addr != 0 else live_addr)
-    var live = BPtr(unsafe_from_address=live_addr)
-    var query = FPtr(unsafe_from_address=query_addr)
-    var out_ids = IMut(unsafe_from_address=out_ids_addr)
-    var out_scores = FMut(unsafe_from_address=out_scores_addr)
-    var out_count = IMut(unsafe_from_address=out_count_addr)
-    out_count[unsafe_offset=0] = 0
-    var qn = query_norm(query, Int(dim), metric, st)
+    var counts = imut(out_counts_addr)
+    for q in range(Int(nq)):
+        counts[unsafe_offset=q] = 0
+    st = check_shape(data_addr, n, dim)
+    if st == OK and (live_addr == 0 or queries_addr == 0 or out_ids_addr == 0 or out_scores_addr == 0):
+        st = E_NULL
+    if st == OK and (k <= 0 or k > MAX_K):
+        st = E_K
+    if st == OK:
+        st = check_metric(metric)
+    if st == OK and (nchunks <= 0 or nchunks > MAX_CHUNKS):
+        st = E_CHUNKS
+    var filtered = False
+    if st == OK and filter_on_addr != 0:
+        for q in range(Int(nq)):
+            var f = bptr(filter_on_addr)[unsafe_offset=q]
+            st = E_FILTER if f > 1 else st
+            filtered = filtered or f == 1
+    if st == OK and filtered and (tags_addr == 0 or filter_tags_addr == 0):
+        st = E_NULL
+    if st != OK:
+        return st
+    var qn2 = query_norms(fptr(queries_addr), Int(nq), Int(dim), metric, st)
     if st != OK:
         return st
 
     initialize_runtime()
-
-    var ni = Int(n)
-    var di = Int(dim)
+    var ni = Int(nq)
     var ki = Int(k)
     var nc = Int(nchunks)
-    var local_cap = ki - 1 if MUTANT_LOCAL_K_MINUS_ONE else ki
-    var loc_scores = List[Float32](length=nc * ki, fill=0)
-    var loc_ids = List[Int64](length=nc * ki, fill=-1)
-    var loc_len = List[Int64](length=nc, fill=0)
-    var loc_status = List[Int32](length=nc, fill=OK)
-    var ps = FMut(unsafe_from_address=Int(loc_scores.unsafe_ptr()))
-    var pi = IMut(unsafe_from_address=Int(loc_ids.unsafe_ptr()))
-    var pl = IMut(unsafe_from_address=Int(loc_len.unsafe_ptr()))
-    var pst = Pointer[Int32, MutUntrackedOrigin](unsafe_from_address=Int(loc_status.unsafe_ptr()))
+    var buf_scores = List[Float32](length=nc * ni * ki, fill=0)
+    var buf_ids = List[Int64](length=nc * ni * ki, fill=-1)
+    var buf_len = List[Int64](length=nc * ni, fill=0)
+    var job = Job(
+        fptr(data_addr), Int(n), Int(dim), iptr(tags_addr if filtered else live_addr), bptr(live_addr),
+        fptr(queries_addr), ni, fptr(Int(qn2.unsafe_ptr())), bptr(filter_on_addr if filtered else live_addr),
+        iptr(filter_tags_addr if filtered else live_addr), filtered, ki, nc,
+        fmut(Int(buf_scores.unsafe_ptr())), imut(Int(buf_ids.unsafe_ptr())), imut(Int(buf_len.unsafe_ptr())),
+        fmut(out_scores_addr),
+    )
+    if n > 0:
+        st = run[False](job, metric)
+    if st != OK:
+        return st
 
-    def scan_chunk(c: Int) {var}:
-        var lo = c * ni // nc
-        var hi = (c + 1) * ni // nc
-        var cs = ps.unsafe_offset(c * ki)
-        var cid = pi.unsafe_offset(c * ki)
+    var ids = imut(out_ids_addr)
+    var scores = fmut(out_scores_addr)
+    for q in range(ni):
         var length = 0
-        for i in range(lo, hi):
-            if not scan_eligible(live, tags, i, filter_on, filter_tag):
-                continue
-            var s = row_score(query, data.unsafe_offset(i * di), di, metric, qn)
-            if not isfinite(s):
-                pst[unsafe_offset=c] = E_SCORE_NONFINITE
-                pl[unsafe_offset=c] = 0
-                return
-            length = bstep(cs, cid, length, local_cap, s, Int64(i))
-        pl[unsafe_offset=c] = Int64(length)
-
-    parallelize(scan_chunk, nc)
-
-    for c in range(nc):
-        if loc_status[c] != OK:
-            return loc_status[c]
-
-    var length = 0
-    for c in range(nc):
-        var cs = ps.unsafe_offset(c * ki)
-        var cid = pi.unsafe_offset(c * ki)
-        for j in range(Int(loc_len[c])):
-            var id = cid[unsafe_offset=j]
-            comptime if MUTANT_POST_FILTER:
-                if not eligible(live, tags, Int(id), filter_on, filter_tag):
-                    continue
-            length = bstep(out_scores, out_ids, length, ki, cs[unsafe_offset=j], id)
-    out_count[unsafe_offset=0] = Int64(length)
-    _ = loc_scores^
-    _ = loc_ids^
-    _ = loc_len^
-    _ = loc_status^
+        for c in range(nc):
+            var o = (c * ni + q) * ki
+            for j in range(o, o + Int(buf_len[c * ni + q])):
+                comptime if MUTANT_POST_FILTER:
+                    if not job.matches(q, Int(buf_ids[j])):
+                        continue
+                length = bstep(scores.unsafe_offset(q * ki), ids.unsafe_offset(q * ki), length, ki, buf_scores[j], buf_ids[j])
+        counts[unsafe_offset=q] = Int64(length)
+    _ = qn2^
     return OK

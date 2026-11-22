@@ -211,6 +211,43 @@ theorem topk_matches (k : Nat) (p : α → Bool) (cs : List (List α)) (z : α)
 theorem topk_sorted (k : Nat) (p : α → Bool) (cs : List (List α)) :
     Sorted ((isort (cs.flatten.filter p)).take k) := take_sorted _ k (isort_sorted _)
 
+
+theorem fused_fold {β γ σ : Type} (step : β → σ → γ → σ) (rows : List γ) :
+    ∀ (init : β → σ) (q : β),
+      (rows.foldl (fun st r => fun q' => step q' (st q') r) init) q = rows.foldl (step q) (init q) := by
+  induction rows with
+  | nil => intro init q; rfl
+  | cons r rows ih => intro init q; exact ih _ q
+
+def guardedStep {γ : Type} (k : Nat) (f : γ → α) (p : α → Bool) (b : List α) (r : γ) : List α :=
+  if p (f r) then bstep k b (f r) else b
+
+theorem guarded_fold {γ : Type} (k : Nat) (f : γ → α) (p : α → Bool) (rows : List γ) :
+    ∀ acc : List α, rows.foldl (guardedStep k f p) acc = bfold k acc ((rows.map f).filter p) := by
+  induction rows with
+  | nil => intro acc; rfl
+  | cons r rows ih =>
+    intro acc
+    simp only [List.foldl_cons, List.map_cons, List.filter_cons, guardedStep]
+    split <;> simp [bfold, List.foldl_cons, ih]
+
+def batchScanChunk {β γ : Type} (k : Nat) (f : β → γ → α) (p : β → α → Bool) (c : List γ) : β → List α :=
+  c.foldl (fun st r => fun q => guardedStep k (f q) (p q) (st q) r) (fun _ => [])
+
+theorem batchScanChunk_eq {β γ : Type} (k : Nat) (f : β → γ → α) (p : β → α → Bool) (c : List γ) (q : β) :
+    batchScanChunk k f p c q = scanChunk k (p q) (c.map (f q)) := by
+  unfold batchScanChunk scanChunk
+  rw [fused_fold (fun q b r => guardedStep k (f q) (p q) b r) c (fun _ => []) q, guarded_fold]
+
+theorem batch_correct {β γ : Type} (k : Nat) (f : β → γ → α) (p : β → α → Bool)
+    (cs ord : List (List γ)) (h : ord.Perm cs) (q : β) :
+    mergeLocals k (ord.map (fun c => batchScanChunk k f p c q))
+      = (isort ((cs.map (·.map (f q))).flatten.filter (p q))).take k := by
+  have e : ord.map (fun c => batchScanChunk k f p c q) = (ord.map (·.map (f q))).map (scanChunk k (p q)) := by
+    simp [List.map_map, Function.comp_def, batchScanChunk_eq]
+  rw [e]
+  exact topk_correct k (p q) _ _ (h.map _)
+
 structure Cand where
   score : Int
   id : Nat
@@ -243,3 +280,4 @@ end TopK
 
 #print axioms TopK.topk_correct
 #print axioms TopK.topk_unique
+#print axioms TopK.batch_correct

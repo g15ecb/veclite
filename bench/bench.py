@@ -8,93 +8,93 @@ import time
 import faiss
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LIB = ctypes.CDLL(os.path.join(ROOT, "build", "libvdb.dylib"))
-
-F = ctypes.POINTER(ctypes.c_float)
-I64 = ctypes.POINTER(ctypes.c_int64)
-U8 = ctypes.POINTER(ctypes.c_uint8)
-
-LIB.vdb_search.restype = ctypes.c_int32
-LIB.vdb_search.argtypes = [F, ctypes.c_int64, ctypes.c_int64, I64, U8, F, ctypes.c_int64, ctypes.c_int32,
-                           ctypes.c_int32, ctypes.c_int64, ctypes.c_int64, I64, F, I64]
-LIB.vdb_scores.restype = ctypes.c_int32
-LIB.vdb_scores.argtypes = [F, ctypes.c_int64, ctypes.c_int64, F, ctypes.c_int32, F]
-LIB.vdb_validate_rows.restype = ctypes.c_int32
-LIB.vdb_validate_rows.argtypes = [F, ctypes.c_int64, ctypes.c_int64, ctypes.c_int32, I64]
+LIB = ctypes.CDLL(os.environ.get("VDB_LIB") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "libvdb.dylib"))
+F, I64, U8 = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_uint8)
+I, I32 = ctypes.c_int64, ctypes.c_int32
+LIB.vdb_search.argtypes = [F, I, I, I64, U8, F, I, U8, I64, I, I32, I, I64, F, I64]
+LIB.vdb_scores.argtypes = [F, I, I, F, I, I32, F]
+LIB.vdb_validate_rows.argtypes = [F, I, I, I32, I64]
+for fn in (LIB.vdb_search, LIB.vdb_scores, LIB.vdb_validate_rows):
+    fn.restype = I32
 
 
 def ptr(a, t):
+    if a is None:
+        return None
     if not a.flags["C_CONTIGUOUS"]:
         raise ValueError("array must be C-contiguous")
     return a.ctypes.data_as(t)
 
 
+def check(rc, what):
+    if rc != 0:
+        raise RuntimeError(f"{what} rc={rc}")
+
+
 class Table:
-    def __init__(self, data, tags, live):
-        if data.dtype != np.float32 or data.ndim != 2:
-            raise ValueError("data must be 2-D float32")
-        if tags.dtype != np.int64 or tags.shape != (data.shape[0],):
-            raise ValueError("tags must be int64 with one entry per row")
-        if live.dtype != np.uint8 or live.shape != (data.shape[0],):
-            raise ValueError("live must be uint8 with one entry per row")
-        self.data = np.ascontiguousarray(data)
-        self.tags = np.ascontiguousarray(tags)
-        self.live = np.ascontiguousarray(live)
+    def __init__(self, data, tags, live, metric=0):
+        n = data.shape[0]
+        if data.dtype != np.float32 or data.ndim != 2 or not data.flags["C_CONTIGUOUS"]:
+            raise ValueError("data must be C-contiguous 2-D float32")
+        if tags.dtype != np.int64 or tags.shape != (n,) or live.dtype != np.uint8 or live.shape != (n,):
+            raise ValueError("tags must be int64[n] and live uint8[n]")
+        self.data, self.tags, self.live, self.metric = data, tags, live, metric
         bad = np.zeros(1, dtype=np.int64)
-        rc = LIB.vdb_validate_rows(ptr(self.data, F), self.data.shape[0], self.data.shape[1], 0, ptr(bad, I64))
-        if rc != 0:
-            raise ValueError(f"vdb_validate_rows rc={rc} row={bad[0]}")
+        check(LIB.vdb_validate_rows(ptr(data, F), n, data.shape[1], metric, ptr(bad, I64)), f"validate row {bad[0]}")
 
-    def search(self, q, k, filter_tag=None, nchunks=16, metric=0):
-        q = np.ascontiguousarray(q, dtype=np.float32)
-        if q.shape != (self.data.shape[1],):
-            raise ValueError("query dimension mismatch")
-        ids = np.empty(k, dtype=np.int64)
-        sc = np.empty(k, dtype=np.float32)
-        cnt = np.zeros(1, dtype=np.int64)
-        rc = LIB.vdb_search(ptr(self.data, F), self.data.shape[0], self.data.shape[1], ptr(self.tags, I64),
-                            ptr(self.live, U8), ptr(q, F), k, metric, 0 if filter_tag is None else 1,
-                            0 if filter_tag is None else filter_tag, nchunks, ptr(ids, I64), ptr(sc, F),
-                            ptr(cnt, I64))
-        if rc != 0:
-            raise RuntimeError(f"vdb_search rc={rc}")
-        return ids[: cnt[0]].copy(), sc[: cnt[0]].copy()
+    def queries(self, qs):
+        qs = np.ascontiguousarray(qs, dtype=np.float32)
+        if qs.ndim != 2 or qs.shape[1] != self.data.shape[1]:
+            raise ValueError("queries must be (nq, dim)")
+        return qs
 
-    def scores(self, q, metric=0):
-        q = np.ascontiguousarray(q, dtype=np.float32)
-        out = np.empty(self.data.shape[0], dtype=np.float32)
-        rc = LIB.vdb_scores(ptr(self.data, F), self.data.shape[0], self.data.shape[1], ptr(q, F), metric,
-                            ptr(out, F))
-        if rc != 0:
-            raise RuntimeError(f"vdb_scores rc={rc}")
+    def search(self, qs, k, filter_tags=None, nchunks=16):
+        qs = self.queries(qs)
+        nq = qs.shape[0]
+        fo = ft = None
+        if filter_tags is not None:
+            filter_tags = np.asarray(filter_tags)
+            if filter_tags.shape != (nq,):
+                raise ValueError("one filter tag per query")
+            fo = (filter_tags >= 0).astype(np.uint8)
+            ft = np.ascontiguousarray(filter_tags, dtype=np.int64)
+        ids = np.empty((nq, k), dtype=np.int64)
+        sc = np.empty((nq, k), dtype=np.float32)
+        cnt = np.zeros(nq, dtype=np.int64)
+        check(LIB.vdb_search(ptr(self.data, F), *self.data.shape, ptr(self.tags, I64), ptr(self.live, U8),
+                             ptr(qs, F), nq, ptr(fo, U8), ptr(ft, I64), k, self.metric, nchunks,
+                             ptr(ids, I64), ptr(sc, F), ptr(cnt, I64)), "vdb_search")
+        return [(ids[q, : cnt[q]], sc[q, : cnt[q]]) for q in range(nq)]
+
+    def scores(self, qs):
+        qs = self.queries(qs)
+        out = np.empty((qs.shape[0], self.data.shape[0]), dtype=np.float32)
+        check(LIB.vdb_scores(ptr(self.data, F), *self.data.shape, ptr(qs, F), qs.shape[0], self.metric, ptr(out, F)), "vdb_scores")
         return out
 
 
-def spec_topk(scores, mask, k):
-    idx = np.nonzero(mask)[0]
-    order = np.lexsort((idx, scores[idx]))
-    return idx[order][:k], scores[idx][order][:k]
+def conformance(t, qs, k, filter_tags):
+    res = t.search(qs, k, filter_tags)
+    spec = t.scores(qs)
+    recall = []
+    for q, (ids, sc) in enumerate(res):
+        mask = t.live.astype(bool) & ((filter_tags[q] < 0) | (t.tags == filter_tags[q]))
+        idx = np.nonzero(mask)[0]
+        order = np.lexsort((idx, spec[q, idx]))
+        assert len(ids) == min(k, len(idx)), "resultSizeIsMinKMatches"
+        assert mask[ids].all(), "resultOnlyLiveAndMatching"
+        assert all(sc[j - 1] < sc[j] or (sc[j - 1] == sc[j] and ids[j - 1] < ids[j]) for j in range(1, len(ids))), "resultSortedUnique"
+        assert np.array_equal(ids, idx[order][:k]) and np.array_equal(sc, spec[q, idx][order][:k]), "resultIsExactTopK"
+        single = t.search(qs[q : q + 1], k, filter_tags[q : q + 1])[0]
+        assert np.array_equal(single[0], ids), "batch_correct"
+        d64 = ((t.data[idx].astype(np.float64) - qs[q].astype(np.float64)) ** 2).sum(axis=1)
+        truth = idx[np.argsort(d64, kind="stable")[:k]]
+        recall.append(len(np.intersect1d(ids, truth)) / max(1, len(truth)))
+    return min(recall)
 
 
-def check_conformance(t, q, k, filter_tag, nchunks):
-    ids, sc = t.search(q, k, filter_tag, nchunks)
-    s = t.scores(q)
-    mask = t.live.astype(bool) if filter_tag is None else (t.live.astype(bool) & (t.tags == filter_tag))
-    rid, rsc = spec_topk(s, mask, k)
-    assert len(ids) == min(k, int(mask.sum())), "resultSizeIsMinKMatches"
-    assert np.all(mask[ids]), "resultOnlyLiveAndMatching"
-    for j in range(1, len(ids)):
-        assert sc[j - 1] < sc[j] or (sc[j - 1] == sc[j] and ids[j - 1] < ids[j]), "resultSortedUnique"
-    assert np.array_equal(ids, rid) and np.array_equal(sc, rsc), "resultIsExactTopK"
-    d64 = ((t.data.astype(np.float64) - q.astype(np.float64)) ** 2).sum(axis=1)
-    true_ids = np.nonzero(mask)[0][np.argsort(d64[mask], kind="stable")][:k]
-    return len(set(ids.tolist()) & set(true_ids.tolist())) / max(1, len(true_ids))
-
-
-def timeit(fn, reps):
-    for _ in range(3):
-        fn()
+def timeit(fn, reps=5):
+    fn()
     ts = []
     for _ in range(reps):
         t0 = time.perf_counter()
@@ -103,52 +103,34 @@ def timeit(fn, reps):
     return statistics.median(ts) * 1e3
 
 
-def numpy_search(data, sqn, q, k, mask):
-    d = sqn - 2.0 * (data @ q)
-    if mask is not None:
-        d = np.where(mask, d, np.inf)
-    part = np.argpartition(d, k)[:k]
-    return part[np.argsort(d[part])]
-
-
 def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 1_000_000
-    dim = int(sys.argv[2]) if len(sys.argv) > 2 else 128
+    n = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
+    dim = int(sys.argv[2]) if len(sys.argv) > 2 else 1536
+    batches = [int(b) for b in sys.argv[3].split(",")] if len(sys.argv) > 3 else [1, 8, 32, 128, 512]
     k = 10
     rng = np.random.default_rng(1)
     data = rng.standard_normal((n, dim), dtype=np.float32)
-    tags = rng.integers(0, 100, n, dtype=np.int64)
-    live = (rng.random(n) > 0.01).astype(np.uint8)
-    t = Table(data, tags, live)
-    qs = rng.standard_normal((8, dim), dtype=np.float32)
-
-    recalls = []
-    for nchunks in (1, 7, 16, 64):
-        for ft in (None, 3):
-            recalls.append(check_conformance(t, qs[0], k, ft, nchunks))
-    sel_tags = np.where(tags < 10, 0, tags)
-    t10 = Table(data, sel_tags, live)
-    recalls.append(check_conformance(t10, qs[1], k, 0, 16))
-
-    sqn = (data * data).sum(axis=1)
+    t = Table(data, rng.integers(0, 10, n, dtype=np.int64), (rng.random(n) > 0.01).astype(np.uint8))
+    qs = rng.standard_normal((max(*batches, 16), dim), dtype=np.float32)
+    mixed = np.where(np.arange(len(qs)) % 2 == 0, -1, np.arange(len(qs)) % 10)
+    min_recall = min(conformance(t, qs[:8], k, mixed[:8]), conformance(t, qs[8:13], k, np.full(5, -1)))
     index = faiss.IndexFlatL2(dim)
     index.add(data)
-    live_b = live.astype(bool)
-    res = {"n": n, "dim": dim, "k": k, "threads": os.cpu_count(), "min_recall_vs_float64": min(recalls), "ms": {}}
-    reps = 20
-    for label, table, ft, sel in (("all", t, None, None), ("10pct", t10, 0, 0), ("1pct", t, 3, 3)):
-        mask = live_b if sel is None else (live_b & (table.tags == sel))
-        q = qs[2]
-        for nc in (8, 16, 64):
-            res["ms"][f"mojo_{label}_chunks{nc}"] = timeit(lambda: table.search(q, k, ft, nc), reps)
-        res["ms"][f"numpy_{label}"] = timeit(lambda: numpy_search(data, sqn, q, k, mask), reps)
-        if sel is None:
-            res["ms"][f"faiss_{label}"] = timeit(lambda: index.search(q[None, :], k), reps)
-        else:
-            sub = np.nonzero(mask)[0].astype(np.int64)
-            params = faiss.SearchParameters(sel=faiss.IDSelectorBatch(sub))
-            res["ms"][f"faiss_{label}"] = timeit(lambda: index.search(q[None, :], k, params=params), reps)
-    print(json.dumps(res, indent=1))
+    rows = []
+    for b in batches:
+        q = qs[:b]
+        none = np.full(b, -1)
+        tag3 = np.full(b, 3)
+        sel = faiss.SearchParameters(sel=faiss.IDSelectorBatch(np.nonzero((t.tags == 3) & (t.live == 1))[0]))
+        rows.append({
+            "batch": b,
+            "mojo_ms_per_q": timeit(lambda: t.search(q, k, none)) / b,
+            "faiss_ms_per_q": timeit(lambda: index.search(q, k)) / b,
+            "mojo_10pct_ms_per_q": timeit(lambda: t.search(q, k, tag3)) / b,
+            "faiss_10pct_ms_per_q": timeit(lambda: index.search(q, k, params=sel)) / b,
+            "mojo_mixed_filters_ms_per_q": timeit(lambda: t.search(q, k, mixed[:b])) / b,
+        })
+    print(json.dumps({"n": n, "dim": dim, "k": k, "gb": data.nbytes / 1e9, "min_recall_vs_float64": min_recall, "rows": rows}, indent=1))
 
 
 if __name__ == "__main__":

@@ -8,15 +8,15 @@
 static int failures = 0;
 static int checks = 0;
 
-#define CHECK(cond, ...)                         \
-    do {                                         \
-        checks++;                                \
-        if (!(cond)) {                           \
-            failures++;                          \
-            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-            fprintf(stderr, __VA_ARGS__);        \
-            fprintf(stderr, "\n");               \
-        }                                        \
+#define CHECK(cond, ...)                                          \
+    do {                                                          \
+        checks++;                                                 \
+        if (!(cond)) {                                            \
+            failures++;                                           \
+            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__);  \
+            fprintf(stderr, __VA_ARGS__);                         \
+            fprintf(stderr, "\n");                                \
+        }                                                         \
     } while (0)
 
 typedef struct {
@@ -26,22 +26,16 @@ typedef struct {
 
 static int cand_cmp(const void *a, const void *b) {
     const cand *x = a, *y = b;
-    if (x->score < y->score) return -1;
-    if (x->score > y->score) return 1;
+    if (x->score != y->score) return x->score < y->score ? -1 : 1;
     return (x->id > y->id) - (x->id < y->id);
 }
 
 static int64_t reference(const float *scores, const int64_t *tags, const uint8_t *live, int64_t n, int64_t k,
                          int filter_on, int64_t tag, cand *out) {
-    cand *all = malloc(sizeof(cand) * (size_t)(n > 0 ? n : 1));
+    cand *all = malloc(sizeof(cand) * (size_t)(n + 1));
     int64_t m = 0;
-    for (int64_t i = 0; i < n; i++) {
-        if (!live[i]) continue;
-        if (filter_on && tags[i] != tag) continue;
-        all[m].score = scores[i];
-        all[m].id = i;
-        m++;
-    }
+    for (int64_t i = 0; i < n; i++)
+        if (live[i] && (!filter_on || tags[i] == tag)) all[m++] = (cand){scores[i], i};
     qsort(all, (size_t)m, sizeof(cand), cand_cmp);
     int64_t r = m < k ? m : k;
     memcpy(out, all, sizeof(cand) * (size_t)r);
@@ -49,106 +43,124 @@ static int64_t reference(const float *scores, const int64_t *tags, const uint8_t
     return r;
 }
 
+static int32_t search1(const float *d, int64_t n, int64_t dim, const int64_t *tags, const uint8_t *live,
+                       const float *q, int64_t k, int32_t metric, int fo, int64_t ft, int64_t nc, int64_t *ids,
+                       float *sc, int64_t *cnt) {
+    uint8_t f = (uint8_t)fo;
+    return vdb_search(d, n, dim, tags, live, q, 1, &f, &ft, k, metric, nc, ids, sc, cnt);
+}
+
 static void test_errors(void) {
     float data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     int64_t tags[4] = {0, 1, 0, 1};
     uint8_t live[4] = {1, 1, 1, 1};
-    float q[2] = {1, 1};
-    int64_t ids[8];
-    float sc[8];
-    int64_t cnt = 99;
+    float q[4] = {1, 1, 2, 2};
+    uint8_t fo[2] = {1, 0}, bad_fo[2] = {0, 2};
+    int64_t ft[2] = {0, 0};
+    int64_t ids[16];
+    float sc[16];
+    int64_t cnt[2] = {99, 99};
     int64_t bad = 0;
-    float nanq[2] = {NAN, 1};
-    float infq[2] = {INFINITY, 1};
-    float zeroq[2] = {0, 0};
+    float nanq[2] = {NAN, 1}, infq[2] = {INFINITY, 1}, zeroq[2] = {0, 0};
 
-    CHECK(vdb_abi_version() == 1, "abi");
-    CHECK(vdb_search(NULL, 4, 2, tags, live, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_NULL, "null data");
-    CHECK(vdb_search(data, 4, 2, tags, NULL, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_NULL, "null live");
-    CHECK(vdb_search(data, 4, 2, NULL, live, q, 2, 0, 1, 0, 1, ids, sc, &cnt) == VDB_E_NULL, "null tags with filter");
-    CHECK(vdb_search(data, 4, 2, NULL, live, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_OK, "null tags without filter ok");
-    CHECK(vdb_search(data, 4, 2, tags, live, NULL, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_NULL, "null query");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 0, 0, 0, 1, NULL, sc, &cnt) == VDB_E_NULL, "null ids");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 0, 0, 0, 1, ids, NULL, &cnt) == VDB_E_NULL, "null scores");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 0, 0, 0, 1, ids, sc, NULL) == VDB_E_NULL, "null count");
-    CHECK(vdb_search(data, -1, 2, tags, live, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_N, "neg n");
-    CHECK(vdb_search(data, 4, 0, tags, live, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_DIM, "dim 0");
-    CHECK(vdb_search(data, 4, VDB_MAX_DIM + 1, tags, live, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_DIM, "dim max");
-    CHECK(vdb_search(data, (int64_t)1 << 40, 65536, tags, live, q, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_OVERFLOW, "overflow");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 0, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_K, "k 0");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, VDB_MAX_K + 1, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_K, "k max");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 3, 0, 0, 1, ids, sc, &cnt) == VDB_E_METRIC, "metric 3");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, -1, 0, 0, 1, ids, sc, &cnt) == VDB_E_METRIC, "metric -1");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 0, 2, 0, 1, ids, sc, &cnt) == VDB_E_FILTER, "filter 2");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 0, 0, 0, 0, ids, sc, &cnt) == VDB_E_CHUNKS, "chunks 0");
-    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, 0, 0, 0, VDB_MAX_CHUNKS + 1, ids, sc, &cnt) == VDB_E_CHUNKS, "chunks max");
-    CHECK(vdb_search(data, 4, 2, tags, live, nanq, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_QUERY_NONFINITE, "nan query");
-    CHECK(vdb_search(data, 4, 2, tags, live, infq, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_E_QUERY_NONFINITE, "inf query");
-    CHECK(vdb_search(data, 4, 2, tags, live, zeroq, 2, 2, 0, 0, 1, ids, sc, &cnt) == VDB_E_QUERY_ZERO, "zero query cosine");
-    CHECK(vdb_search(data, 4, 2, tags, live, zeroq, 2, 0, 0, 0, 1, ids, sc, &cnt) == VDB_OK, "zero query l2 ok");
+    CHECK(vdb_abi_version() == 2, "abi");
+    CHECK(vdb_search(NULL, 4, 2, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null data");
+    CHECK(cnt[0] == 0 && cnt[1] == 0, "counts reset before validation");
+    CHECK(vdb_search(data, 4, 2, tags, NULL, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null live");
+    CHECK(vdb_search(data, 4, 2, NULL, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null tags with filter");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, NULL, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null filter tags");
+    CHECK(vdb_search(data, 4, 2, NULL, live, q, 2, NULL, NULL, 2, 0, 1, ids, sc, cnt) == VDB_OK, "no filters ok");
+    CHECK(vdb_search(data, 4, 2, tags, live, NULL, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null queries");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, 0, 1, NULL, sc, cnt) == VDB_E_NULL, "null ids");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, 0, 1, ids, NULL, cnt) == VDB_E_NULL, "null scores");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, NULL) == VDB_E_NULL, "null counts");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 0, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_BATCH, "batch 0");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, VDB_MAX_BATCH + 1, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_BATCH, "batch max");
+    CHECK(vdb_search(data, -1, 2, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_N, "neg n");
+    CHECK(vdb_search(data, 4, 0, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_DIM, "dim 0");
+    CHECK(vdb_search(data, 4, VDB_MAX_DIM + 1, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_DIM, "dim max");
+    CHECK(vdb_search(data, (int64_t)1 << 40, 65536, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_OVERFLOW, "overflow");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 0, 0, 1, ids, sc, cnt) == VDB_E_K, "k 0");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, VDB_MAX_K + 1, 0, 1, ids, sc, cnt) == VDB_E_K, "k max");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, 3, 1, ids, sc, cnt) == VDB_E_METRIC, "metric 3");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, -1, 1, ids, sc, cnt) == VDB_E_METRIC, "metric -1");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, bad_fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_FILTER, "filter 2");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, 0, 0, ids, sc, cnt) == VDB_E_CHUNKS, "chunks 0");
+    CHECK(vdb_search(data, 4, 2, tags, live, q, 2, fo, ft, 2, 0, VDB_MAX_CHUNKS + 1, ids, sc, cnt) == VDB_E_CHUNKS, "chunks max");
+    CHECK(search1(data, 4, 2, tags, live, nanq, 2, 0, 0, 0, 1, ids, sc, cnt) == VDB_E_QUERY_NONFINITE, "nan query");
+    CHECK(search1(data, 4, 2, tags, live, infq, 2, 0, 0, 0, 1, ids, sc, cnt) == VDB_E_QUERY_NONFINITE, "inf query");
+    CHECK(search1(data, 4, 2, tags, live, zeroq, 2, 2, 0, 0, 1, ids, sc, cnt) == VDB_E_QUERY_ZERO, "zero query cosine");
+    CHECK(search1(data, 4, 2, tags, live, zeroq, 2, 0, 0, 0, 1, ids, sc, cnt) == VDB_OK, "zero query l2 ok");
 
-    float bigdata[8] = {1, 2, NAN, 4, 5, 6, 7, 8};
-    cnt = 99;
-    CHECK(vdb_search(bigdata, 4, 2, tags, live, q, 2, 0, 0, 0, 2, ids, sc, &cnt) == VDB_E_SCORE_NONFINITE, "nan row");
-    CHECK(cnt == 0, "count reset on error, got %lld", (long long)cnt);
-    uint8_t live_nan_dead[4] = {1, 0, 1, 1};
-    CHECK(vdb_search(bigdata, 4, 2, tags, live_nan_dead, q, 2, 0, 0, 0, 2, ids, sc, &cnt) == VDB_OK, "dead nan row skipped");
-    CHECK(vdb_validate_rows(bigdata, 4, 2, 0, &bad) == VDB_E_DATA_NONFINITE && bad == 1, "validate nan row %lld", (long long)bad);
-    float zrow[4] = {1, 1, 0, 0};
+    float nandata[8] = {1, 2, NAN, 4, 5, 6, 7, 8};
+    uint8_t dead1[4] = {1, 0, 1, 1};
+    cnt[0] = 99;
+    CHECK(search1(nandata, 4, 2, tags, live, q, 2, 0, 0, 0, 2, ids, sc, cnt) == VDB_E_SCORE_NONFINITE, "nan row");
+    CHECK(cnt[0] == 0, "count reset on error");
+    CHECK(search1(nandata, 4, 2, tags, dead1, q, 2, 0, 0, 0, 2, ids, sc, cnt) == VDB_OK, "dead nan row skipped");
+    CHECK(vdb_validate_rows(nandata, 4, 2, 0, &bad) == VDB_E_DATA_NONFINITE && bad == 1, "validate nan row");
+    float zrow[4] = {1, 1, 0, 0}, huge[2] = {3e38f, 3e38f};
     CHECK(vdb_validate_rows(zrow, 2, 2, 2, &bad) == VDB_E_DATA_ZERO && bad == 1, "validate zero cosine row");
     CHECK(vdb_validate_rows(zrow, 2, 2, 0, &bad) == VDB_OK && bad == -1, "validate zero l2 row ok");
-    float hugerow[2] = {3e38f, 3e38f};
-    CHECK(vdb_validate_rows(hugerow, 1, 2, 0, &bad) == VDB_E_DATA_NONFINITE, "validate overflow norm");
+    CHECK(vdb_validate_rows(huge, 1, 2, 0, &bad) == VDB_E_DATA_NONFINITE, "validate overflow norm");
     CHECK(vdb_validate_rows(NULL, 1, 2, 0, &bad) == VDB_E_NULL, "validate null");
     CHECK(vdb_validate_rows(data, 4, 2, 7, &bad) == VDB_E_METRIC, "validate metric");
-    CHECK(vdb_scores(data, 4, 2, q, 0, NULL) == VDB_E_NULL, "scores null");
-    CHECK(vdb_search(data, 0, 2, tags, live, q, 3, 0, 0, 0, 4, ids, sc, &cnt) == VDB_OK && cnt == 0, "empty table");
+    CHECK(vdb_scores(data, 4, 2, q, 2, 0, NULL) == VDB_E_NULL, "scores null");
+    CHECK(vdb_scores(data, 4, 2, q, 0, 0, sc) == VDB_E_BATCH, "scores batch 0");
+    CHECK(vdb_search(data, 0, 2, tags, live, q, 2, fo, ft, 3, 0, 4, ids, sc, cnt) == VDB_OK && cnt[0] == 0 && cnt[1] == 0, "empty table");
 }
 
 static void test_random(void) {
     srand(7);
-    int metrics[3] = {VDB_METRIC_L2, VDB_METRIC_DOT, VDB_METRIC_COSINE};
     for (int trial = 0; trial < 300; trial++) {
-        int64_t n = rand() % 200;
-        int64_t dim = 1 + rand() % 40;
-        int64_t k = 1 + rand() % 30;
-        int64_t nchunks = 1 + rand() % 12;
-        int metric = metrics[trial % 3];
-        int filter_on = rand() % 2;
-        int64_t tag = rand() % 3;
+        int64_t n = rand() % 200, dim = 1 + rand() % 40, k = 1 + rand() % 30, nc = 1 + rand() % 12;
+        int64_t nq = 1 + rand() % 9;
+        int32_t metric = trial % 3;
         float *data = malloc(sizeof(float) * (size_t)(n * dim + 1));
         int64_t *tags = malloc(sizeof(int64_t) * (size_t)(n + 1));
         uint8_t *live = malloc((size_t)(n + 1));
-        float *q = malloc(sizeof(float) * (size_t)dim);
-        float *scores = malloc(sizeof(float) * (size_t)(n + 1));
+        float *qs = malloc(sizeof(float) * (size_t)(nq * dim));
+        float *scores = malloc(sizeof(float) * (size_t)(nq * n + 1));
+        float *one = malloc(sizeof(float) * (size_t)(n + 1));
+        uint8_t fo[16];
+        int64_t ft[16];
+        int64_t ids[16 * 32], ids1[32];
+        float sc[16 * 32], sc1[32];
+        int64_t cnt[16], cnt1;
+        cand ref[64];
         for (int64_t i = 0; i < n * dim; i++) data[i] = (float)(rand() % 3);
         for (int64_t i = 0; i < n; i++) {
             tags[i] = rand() % 3;
             live[i] = rand() % 5 != 0;
-            int any = 0;
-            for (int64_t d = 0; d < dim; d++) any |= data[i * dim + d] != 0;
-            if (!any) data[i * dim] = 1;
+            data[i * dim] = data[i * dim] == 0 ? 1 : data[i * dim];
         }
-        for (int64_t d = 0; d < dim; d++) q[d] = (float)(rand() % 3);
-        q[0] = q[0] == 0 ? 1 : q[0];
-        int64_t ids[64];
-        float sc[64];
-        cand ref[64];
-        int64_t cnt = -1;
-        int rc = vdb_search(data, n, dim, tags, live, q, k, metric, filter_on, tag, nchunks, ids, sc, &cnt);
+        for (int64_t q = 0; q < nq; q++) {
+            for (int64_t d = 0; d < dim; d++) qs[q * dim + d] = (float)(rand() % 3);
+            qs[q * dim] = qs[q * dim] == 0 ? 1 : qs[q * dim];
+            fo[q] = (uint8_t)(rand() % 2);
+            ft[q] = rand() % 3;
+        }
+        int rc = vdb_search(data, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ids, sc, cnt);
         CHECK(rc == VDB_OK, "trial %d rc %d", trial, rc);
-        CHECK(vdb_scores(data, n, dim, q, metric, scores) == VDB_OK, "scores rc");
-        int64_t r = reference(scores, tags, live, n, k, filter_on, tag, ref);
-        CHECK(cnt == r, "trial %d count %lld want %lld", trial, (long long)cnt, (long long)r);
-        for (int64_t j = 0; j < r && j < cnt; j++) {
-            CHECK(ids[j] == ref[j].id && sc[j] == ref[j].score, "trial %d pos %lld id %lld want %lld", trial,
-                  (long long)j, (long long)ids[j], (long long)ref[j].id);
+        CHECK(vdb_scores(data, n, dim, qs, nq, metric, scores) == VDB_OK || n == 0, "scores rc");
+        for (int64_t q = 0; q < nq; q++) {
+            CHECK(n == 0 || vdb_scores(data, n, dim, qs + q * dim, 1, metric, one) == VDB_OK, "scores single rc");
+            for (int64_t i = 0; i < n; i++)
+                CHECK(memcmp(&one[i], &scores[q * n + i], sizeof(float)) == 0, "trial %d batch score differs q %lld row %lld", trial, (long long)q, (long long)i);
+            int64_t r = reference(scores + q * n, tags, live, n, k, fo[q], ft[q], ref);
+            CHECK(cnt[q] == r, "trial %d q %lld count %lld want %lld", trial, (long long)q, (long long)cnt[q], (long long)r);
+            for (int64_t j = 0; j < r && j < cnt[q]; j++)
+                CHECK(ids[q * k + j] == ref[j].id && sc[q * k + j] == ref[j].score, "trial %d q %lld pos %lld id %lld want %lld",
+                      trial, (long long)q, (long long)j, (long long)ids[q * k + j], (long long)ref[j].id);
+            CHECK(search1(data, n, dim, tags, live, qs + q * dim, k, metric, fo[q], ft[q], nc, ids1, sc1, &cnt1) == VDB_OK, "single rc");
+            CHECK(cnt1 == cnt[q] && memcmp(ids1, ids + q * k, sizeof(int64_t) * (size_t)cnt1) == 0, "trial %d q %lld batch != single", trial, (long long)q);
         }
         free(data);
         free(tags);
         free(live);
-        free(q);
+        free(qs);
         free(scores);
+        free(one);
     }
 }
 
@@ -156,5 +168,5 @@ int main(void) {
     test_errors();
     test_random();
     printf("c_host: %d checks, %d failures\n", checks, failures);
-    return failures == 0 ? 0 : 1;
+    return failures != 0;
 }
