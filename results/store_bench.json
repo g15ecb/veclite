@@ -1,0 +1,68 @@
+{
+ "search_tail": [
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 0.0,
+   "batch": 1,
+   "store_ms_per_q": 4.251667065545917,
+   "kernel_ms_per_q": 3.067792044021189
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 0.0,
+   "batch": 32,
+   "store_ms_per_q": 0.5446770628623199,
+   "kernel_ms_per_q": 0.4145807179156691
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 0.25,
+   "batch": 1,
+   "store_ms_per_q": 3.4793750382959843,
+   "kernel_ms_per_q": 3.14941699616611
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 0.25,
+   "batch": 32,
+   "store_ms_per_q": 0.5029752501286566,
+   "kernel_ms_per_q": 0.34972787398146465
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 0.5,
+   "batch": 1,
+   "store_ms_per_q": 4.112499998882413,
+   "kernel_ms_per_q": 3.0178329907357693
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 0.5,
+   "batch": 32,
+   "store_ms_per_q": 0.5123307491885498,
+   "kernel_ms_per_q": 0.5452578152471688
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 1.0,
+   "batch": 1,
+   "store_ms_per_q": 13.048333930782974,
+   "kernel_ms_per_q": 3.491958021186292
+  },
+  {
+   "n": 50000,
+   "dim": 1536,
+   "wal_fraction": 1.0,
+   "batch": 32,
+   "store_ms_per_q": 0.5175911574042402,
+   "kernel_ms_per_q": 0.4959218749718275
+  }
+ ]
+}
