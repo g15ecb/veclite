@@ -1,68 +1,228 @@
 {
+ "commit": [
+  {
+   "dim": 768,
+   "rows_per_commit": 1,
+   "rows_per_s": 215.43927468273307,
+   "ms_per_commit": 4.641679199266946,
+   "mb_per_s": 0.661829451825356
+  },
+  {
+   "dim": 768,
+   "rows_per_commit": 4,
+   "rows_per_s": 797.6188784011015,
+   "ms_per_commit": 5.014926437070244,
+   "mb_per_s": 2.450285194448184
+  },
+  {
+   "dim": 768,
+   "rows_per_commit": 16,
+   "rows_per_s": 3404.7137342816836,
+   "ms_per_commit": 4.699367185821757,
+   "mb_per_s": 10.459280591713332
+  },
+  {
+   "dim": 768,
+   "rows_per_commit": 64,
+   "rows_per_s": 11535.878007371002,
+   "ms_per_commit": 5.547908876906149,
+   "mb_per_s": 35.43821723864372
+  },
+  {
+   "dim": 768,
+   "rows_per_commit": 256,
+   "rows_per_s": 32135.351346689655,
+   "ms_per_commit": 7.966304685396608,
+   "mb_per_s": 98.71979933703062
+  },
+  {
+   "dim": 768,
+   "rows_per_commit": 1024,
+   "rows_per_s": 85124.58665591762,
+   "ms_per_commit": 12.029426987282932,
+   "mb_per_s": 261.5027302069789
+  },
+  {
+   "dim": 1536,
+   "rows_per_commit": 1,
+   "rows_per_s": 237.95872300033272,
+   "ms_per_commit": 4.202409507797711,
+   "mb_per_s": 1.4620183941140443
+  },
+  {
+   "dim": 1536,
+   "rows_per_commit": 4,
+   "rows_per_s": 890.831008862007,
+   "ms_per_commit": 4.49018945255375,
+   "mb_per_s": 5.473265718448172
+  },
+  {
+   "dim": 1536,
+   "rows_per_commit": 16,
+   "rows_per_s": 2953.4485856422084,
+   "ms_per_commit": 5.417395812401082,
+   "mb_per_s": 18.145988110185726
+  },
+  {
+   "dim": 1536,
+   "rows_per_commit": 64,
+   "rows_per_s": 11324.943770250622,
+   "ms_per_commit": 5.65124218701385,
+   "mb_per_s": 69.58045452441984
+  },
+  {
+   "dim": 1536,
+   "rows_per_commit": 256,
+   "rows_per_s": 33719.12646584599,
+   "ms_per_commit": 7.592130248667672,
+   "mb_per_s": 207.17031300615776
+  },
+  {
+   "dim": 1536,
+   "rows_per_commit": 1024,
+   "rows_per_s": 73339.02851676173,
+   "ms_per_commit": 13.962552009616047,
+   "mb_per_s": 450.59499120698405
+  },
+  {
+   "dim": 3072,
+   "rows_per_commit": 1,
+   "rows_per_s": 210.55056406558813,
+   "ms_per_commit": 4.749452961277711,
+   "mb_per_s": 2.5872453312379466
+  },
+  {
+   "dim": 3072,
+   "rows_per_commit": 4,
+   "rows_per_s": 808.6324675014388,
+   "ms_per_commit": 4.946623046635068,
+   "mb_per_s": 9.93647576065768
+  },
+  {
+   "dim": 3072,
+   "rows_per_commit": 16,
+   "rows_per_s": 3160.030553007819,
+   "ms_per_commit": 5.063242184405681,
+   "mb_per_s": 38.83045543536008
+  },
+  {
+   "dim": 3072,
+   "rows_per_commit": 64,
+   "rows_per_s": 10469.214772572343,
+   "ms_per_commit": 6.113161434768699,
+   "mb_per_s": 128.64571112536893
+  },
+  {
+   "dim": 3072,
+   "rows_per_commit": 256,
+   "rows_per_s": 29473.43917991874,
+   "ms_per_commit": 8.685786495334469,
+   "mb_per_s": 362.16962064284144
+  },
+  {
+   "dim": 3072,
+   "rows_per_commit": 1024,
+   "rows_per_s": 57314.10141429146,
+   "ms_per_commit": 17.866458249045536,
+   "mb_per_s": 704.2756781788135
+  }
+ ],
+ "checkpoint_recovery": [
+  {
+   "dim": 1536,
+   "wal_rows": 1024,
+   "wal_mb": 6.291456,
+   "recover_s": 0.005481000058352947,
+   "checkpoint_s": 0.028005916043184698,
+   "open_after_ckpt_s": 0.004090792033821344,
+   "checkpoint_mb_per_s": 224.64739201169746,
+   "recover_mb_per_s": 1147.8664355078654
+  },
+  {
+   "dim": 1536,
+   "wal_rows": 4096,
+   "wal_mb": 25.165824,
+   "recover_s": 0.022177416016347706,
+   "checkpoint_s": 0.07854875002522022,
+   "open_after_ckpt_s": 0.005995917017571628,
+   "checkpoint_mb_per_s": 320.38478004958483,
+   "recover_mb_per_s": 1134.7500530020918
+  },
+  {
+   "dim": 1536,
+   "wal_rows": 16384,
+   "wal_mb": 100.663296,
+   "recover_s": 0.09097720892168581,
+   "checkpoint_s": 0.25309737492352724,
+   "open_after_ckpt_s": 0.008083582972176373,
+   "checkpoint_mb_per_s": 397.7255632557042,
+   "recover_mb_per_s": 1106.4671822000175
+  }
+ ],
  "search_tail": [
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 0.0,
    "batch": 1,
-   "store_ms_per_q": 4.251667065545917,
-   "kernel_ms_per_q": 3.067792044021189
+   "store_ms_per_q": 2.8672920307144523,
+   "kernel_ms_per_q": 2.691917004995048
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 0.0,
    "batch": 32,
-   "store_ms_per_q": 0.5446770628623199,
-   "kernel_ms_per_q": 0.4145807179156691
+   "store_ms_per_q": 0.3635495013440959,
+   "kernel_ms_per_q": 0.327955716784345
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 0.25,
    "batch": 1,
-   "store_ms_per_q": 3.4793750382959843,
-   "kernel_ms_per_q": 3.14941699616611
+   "store_ms_per_q": 4.6551249688491225,
+   "kernel_ms_per_q": 2.881666994653642
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 0.25,
    "batch": 32,
-   "store_ms_per_q": 0.5029752501286566,
-   "kernel_ms_per_q": 0.34972787398146465
+   "store_ms_per_q": 0.37256640644045547,
+   "kernel_ms_per_q": 0.3372747523826547
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 0.5,
    "batch": 1,
-   "store_ms_per_q": 4.112499998882413,
-   "kernel_ms_per_q": 3.0178329907357693
+   "store_ms_per_q": 3.1144159147515893,
+   "kernel_ms_per_q": 2.908125054091215
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 0.5,
    "batch": 32,
-   "store_ms_per_q": 0.5123307491885498,
-   "kernel_ms_per_q": 0.5452578152471688
+   "store_ms_per_q": 0.3544465907907579,
+   "kernel_ms_per_q": 0.3381953138159588
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 1.0,
    "batch": 1,
-   "store_ms_per_q": 13.048333930782974,
-   "kernel_ms_per_q": 3.491958021186292
+   "store_ms_per_q": 3.0696250032633543,
+   "kernel_ms_per_q": 2.862584078684449
   },
   {
    "n": 50000,
    "dim": 1536,
    "wal_fraction": 1.0,
    "batch": 32,
-   "store_ms_per_q": 0.5175911574042402,
-   "kernel_ms_per_q": 0.4959218749718275
+   "store_ms_per_q": 0.3354492218932137,
+   "kernel_ms_per_q": 0.32429428028990515
   }
  ]
 }

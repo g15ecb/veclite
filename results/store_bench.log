@@ -1,0 +1,29 @@
+commit {'dim': 768, 'rows_per_commit': 1, 'rows_per_s': 215.43927468273307, 'ms_per_commit': 4.641679199266946, 'mb_per_s': 0.661829451825356}
+commit {'dim': 768, 'rows_per_commit': 4, 'rows_per_s': 797.6188784011015, 'ms_per_commit': 5.014926437070244, 'mb_per_s': 2.450285194448184}
+commit {'dim': 768, 'rows_per_commit': 16, 'rows_per_s': 3404.7137342816836, 'ms_per_commit': 4.699367185821757, 'mb_per_s': 10.459280591713332}
+commit {'dim': 768, 'rows_per_commit': 64, 'rows_per_s': 11535.878007371002, 'ms_per_commit': 5.547908876906149, 'mb_per_s': 35.43821723864372}
+commit {'dim': 768, 'rows_per_commit': 256, 'rows_per_s': 32135.351346689655, 'ms_per_commit': 7.966304685396608, 'mb_per_s': 98.71979933703062}
+commit {'dim': 768, 'rows_per_commit': 1024, 'rows_per_s': 85124.58665591762, 'ms_per_commit': 12.029426987282932, 'mb_per_s': 261.5027302069789}
+commit {'dim': 1536, 'rows_per_commit': 1, 'rows_per_s': 237.95872300033272, 'ms_per_commit': 4.202409507797711, 'mb_per_s': 1.4620183941140443}
+commit {'dim': 1536, 'rows_per_commit': 4, 'rows_per_s': 890.831008862007, 'ms_per_commit': 4.49018945255375, 'mb_per_s': 5.473265718448172}
+commit {'dim': 1536, 'rows_per_commit': 16, 'rows_per_s': 2953.4485856422084, 'ms_per_commit': 5.417395812401082, 'mb_per_s': 18.145988110185726}
+commit {'dim': 1536, 'rows_per_commit': 64, 'rows_per_s': 11324.943770250622, 'ms_per_commit': 5.65124218701385, 'mb_per_s': 69.58045452441984}
+commit {'dim': 1536, 'rows_per_commit': 256, 'rows_per_s': 33719.12646584599, 'ms_per_commit': 7.592130248667672, 'mb_per_s': 207.17031300615776}
+commit {'dim': 1536, 'rows_per_commit': 1024, 'rows_per_s': 73339.02851676173, 'ms_per_commit': 13.962552009616047, 'mb_per_s': 450.59499120698405}
+commit {'dim': 3072, 'rows_per_commit': 1, 'rows_per_s': 210.55056406558813, 'ms_per_commit': 4.749452961277711, 'mb_per_s': 2.5872453312379466}
+commit {'dim': 3072, 'rows_per_commit': 4, 'rows_per_s': 808.6324675014388, 'ms_per_commit': 4.946623046635068, 'mb_per_s': 9.93647576065768}
+commit {'dim': 3072, 'rows_per_commit': 16, 'rows_per_s': 3160.030553007819, 'ms_per_commit': 5.063242184405681, 'mb_per_s': 38.83045543536008}
+commit {'dim': 3072, 'rows_per_commit': 64, 'rows_per_s': 10469.214772572343, 'ms_per_commit': 6.113161434768699, 'mb_per_s': 128.64571112536893}
+commit {'dim': 3072, 'rows_per_commit': 256, 'rows_per_s': 29473.43917991874, 'ms_per_commit': 8.685786495334469, 'mb_per_s': 362.16962064284144}
+commit {'dim': 3072, 'rows_per_commit': 1024, 'rows_per_s': 57314.10141429146, 'ms_per_commit': 17.866458249045536, 'mb_per_s': 704.2756781788135}
+ckpt {'dim': 1536, 'wal_rows': 1024, 'wal_mb': 6.291456, 'recover_s': 0.005481000058352947, 'checkpoint_s': 0.028005916043184698, 'open_after_ckpt_s': 0.004090792033821344, 'checkpoint_mb_per_s': 224.64739201169746, 'recover_mb_per_s': 1147.8664355078654}
+ckpt {'dim': 1536, 'wal_rows': 4096, 'wal_mb': 25.165824, 'recover_s': 0.022177416016347706, 'checkpoint_s': 0.07854875002522022, 'open_after_ckpt_s': 0.005995917017571628, 'checkpoint_mb_per_s': 320.38478004958483, 'recover_mb_per_s': 1134.7500530020918}
+ckpt {'dim': 1536, 'wal_rows': 16384, 'wal_mb': 100.663296, 'recover_s': 0.09097720892168581, 'checkpoint_s': 0.25309737492352724, 'open_after_ckpt_s': 0.008083582972176373, 'checkpoint_mb_per_s': 397.7255632557042, 'recover_mb_per_s': 1106.4671822000175}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 0.0, 'batch': 1, 'store_ms_per_q': 3.1172080198302865, 'kernel_ms_per_q': 2.8994589811190963}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 0.0, 'batch': 32, 'store_ms_per_q': 0.37742968925158493, 'kernel_ms_per_q': 0.3848007836495526}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 0.25, 'batch': 1, 'store_ms_per_q': 3.1216659117490053, 'kernel_ms_per_q': 2.844541915692389}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 0.25, 'batch': 32, 'store_ms_per_q': 0.36457421811064705, 'kernel_ms_per_q': 0.32675653346814215}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 0.5, 'batch': 1, 'store_ms_per_q': 3.109458019025624, 'kernel_ms_per_q': 11.5451670717448}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 0.5, 'batch': 32, 'store_ms_per_q': 0.3654010324680712, 'kernel_ms_per_q': 0.3405755305720959}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 1.0, 'batch': 1, 'store_ms_per_q': 3.0646249651908875, 'kernel_ms_per_q': 2.820042078383267}
+tail {'n': 50000, 'dim': 1536, 'wal_fraction': 1.0, 'batch': 32, 'store_ms_per_q': 0.3335039073135704, 'kernel_ms_per_q': 0.32614062729408033}
