@@ -12,7 +12,7 @@
 #define VDB_E_READER (-24)
 #define VDB_E_ARG (-25)
 
-enum { VDB_INFO_ROWS, VDB_INFO_NTX, VDB_INFO_PUBLISHED, VDB_INFO_HDR_TXN, VDB_INFO_WAL_FRAMES, VDB_INFO_SALT, VDB_INFO_MAIN_ROWS, VDB_INFO_POISONED, VDB_INFO_LEN };
+enum { VDB_INFO_ROWS, VDB_INFO_NTX, VDB_INFO_PUBLISHED, VDB_INFO_HDR_TXN, VDB_INFO_WAL_FRAMES, VDB_INFO_SALT, VDB_INFO_MAIN_ROWS, VDB_INFO_POISONED, VDB_INFO_DTYPE, VDB_INFO_LEN };
 
 int32_t vdb_sim_new(int64_t *out_sim);
 int32_t vdb_sim_free(int64_t sim);
@@ -20,7 +20,7 @@ int32_t vdb_sim_set_budget(int64_t sim, int64_t budget);
 int64_t vdb_sim_mutations(int64_t sim);
 int32_t vdb_sim_crash(int64_t sim, uint64_t seed);
 
-int32_t vdb_open(const char *path, int64_t dim, int64_t extent_rows, int64_t sim, int64_t *out_db);
+int32_t vdb_open(const char *path, int64_t dim, int64_t extent_rows, int32_t storage, int64_t sim, int64_t *out_db);
 int32_t vdb_close(int64_t db);
 int32_t vdb_append(int64_t db, const float *vec, int64_t tag, int64_t *out_id);
 int32_t vdb_delete(int64_t db, int64_t id);

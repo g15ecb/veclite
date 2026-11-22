@@ -18,6 +18,12 @@
 #define VDB_E_DATA_NONFINITE (-12)
 #define VDB_E_DATA_ZERO (-13)
 #define VDB_E_BATCH (-14)
+#define VDB_E_DTYPE (-15)
+#define VDB_E_RANGE (-16)
+
+#define VDB_F32 0
+#define VDB_F16 1
+#define VDB_I8 2
 
 #define VDB_METRIC_L2 0
 #define VDB_METRIC_DOT 1
@@ -34,6 +40,16 @@ int32_t vdb_validate_rows(const float *data, int64_t n, int64_t dim, int32_t met
 
 int32_t vdb_scores(const float *data, int64_t n, int64_t dim, const float *queries, int64_t nq, int32_t metric,
                    float *out_scores);
+
+int32_t vdb_encode(int32_t dtype, const float *src, int64_t n, int64_t dim, void *dst, float *aux, int64_t *bad_row);
+
+int32_t vdb_i8_bounds(const int8_t *data, const float *aux, const float *orig, int64_t n, int64_t dim, const float *query,
+                      int32_t metric, float *out_approx, double *out_eps, float *out_exact);
+
+int32_t vdb_search_ex(const void *data, int32_t dtype, const float *aux, const float *orig, int64_t n, int64_t dim,
+                      const int64_t *tags, const uint8_t *live, const float *queries, int64_t nq, const uint8_t *filter_on,
+                      const int64_t *filter_tags, int64_t k, int32_t metric, int64_t nchunks, int64_t *out_ids,
+                      float *out_scores, int64_t *out_counts, int64_t *stats);
 
 int32_t vdb_search(const float *data, int64_t n, int64_t dim, const int64_t *tags, const uint8_t *live,
                    const float *queries, int64_t nq, const uint8_t *filter_on, const int64_t *filter_tags,

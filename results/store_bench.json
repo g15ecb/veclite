@@ -224,5 +224,40 @@
    "store_ms_per_q": 0.3354492218932137,
    "kernel_ms_per_q": 0.32429428028990515
   }
+ ],
+ "store_dtype": [
+  {
+   "storage": "f32",
+   "n": 50000,
+   "dim": 1536,
+   "ingest_rows_per_s": 70406.39627076573,
+   "checkpoint_s": 0.8877945829881355,
+   "main_file_mb": 336.018936,
+   "recall_vs_f32": 1.0,
+   "search_ms_per_q_batch1": 4.070374998264015,
+   "search_ms_per_q_batch32": 0.5495768127730116
+  },
+  {
+   "storage": "f16",
+   "n": 50000,
+   "dim": 1536,
+   "ingest_rows_per_s": 73426.41686178034,
+   "checkpoint_s": 0.7381795831024647,
+   "main_file_mb": 168.265208,
+   "recall_vs_f32": 1.0,
+   "search_ms_per_q_batch1": 3.515959018841386,
+   "search_ms_per_q_batch32": 0.4609661555150524
+  },
+  {
+   "storage": "i8",
+   "n": 50000,
+   "dim": 1536,
+   "ingest_rows_per_s": 56892.980505305946,
+   "checkpoint_s": 1.2500524580245838,
+   "main_file_mb": 420.559344,
+   "recall_vs_f32": 1.0,
+   "search_ms_per_q_batch1": 4.5484170550480485,
+   "search_ms_per_q_batch32": 1.5308684705814812
+  }
  ]
 }

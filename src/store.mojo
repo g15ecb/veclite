@@ -21,7 +21,7 @@ comptime MUTANT_NO_RECOVERY_TRUNCATE = get_defined_bool["VDB_MUTANT_NO_RECOVERY_
 
 comptime MAIN_MAGIC: UInt64 = 0x314E49414D424456
 comptime WAL_MAGIC: UInt64 = 0x31304C4157424456
-comptime VERSION: UInt64 = 1
+comptime VERSION: UInt64 = 2
 comptime SLOT_BYTES = 4096
 comptime DATA_OFF = 2 * SLOT_BYTES
 comptime WAL_HDR = 64
@@ -199,6 +199,7 @@ struct Db(Movable):
     var sim: Int
     var fds: List[Int]
     var dim: Int
+    var dtype: Int32
     var extent_rows: Int
     var extent_bytes: Int
     var hdr_seq: UInt64
@@ -217,6 +218,8 @@ struct Db(Movable):
     var f_vec: List[Int]
     var a_vec: List[Float32]
     var a_tag: List[Int64]
+    var a_enc: List[UInt8]
+    var a_aux: List[Float32]
     var ntx: Int
     var published: Int
     var pub_slot: Int
@@ -240,14 +243,36 @@ struct Db(Movable):
     def row_off(self, id: Int) -> Int:
         return DATA_OFF + (id // self.extent_rows) * self.extent_bytes
 
+    def enc_bytes(self) -> Int:
+        return self.dim * elem_bytes(self.dtype)
+
+    def orig_bytes(self) -> Int:
+        return self.dim * 4 if self.dtype == I8 else 0
+
+    def aux_bytes(self) -> Int:
+        return AUX * 4 if self.dtype == I8 else 0
+
+    def set_extent_bytes(mut self):
+        var per_row = self.enc_bytes() + self.orig_bytes() + self.aux_bytes() + 9
+        self.extent_bytes = ((self.extent_rows * per_row + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
+
     def vec_off(self, id: Int) -> Int:
-        return self.row_off(id) + (id % self.extent_rows) * self.dim * 4
+        return self.row_off(id) + (id % self.extent_rows) * self.enc_bytes()
+
+    def orig_off(self, id: Int) -> Int:
+        return self.row_off(id) + self.extent_rows * self.enc_bytes() + (id % self.extent_rows) * self.orig_bytes()
+
+    def aux_off(self, id: Int) -> Int:
+        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + self.orig_bytes()) + (id % self.extent_rows) * self.aux_bytes()
 
     def tag_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * self.dim * 4 + (id % self.extent_rows) * 8
+        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + self.orig_bytes() + self.aux_bytes()) + (id % self.extent_rows) * 8
 
     def live_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * (self.dim * 4 + 8) + (id % self.extent_rows)
+        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + self.orig_bytes() + self.aux_bytes() + 8) + (id % self.extent_rows)
+
+    def format_word(self) -> UInt64:
+        return VERSION | (UInt64(Int(self.dtype)) << 16) | (UInt64(self.dim) << 32)
 
     def simp(self) -> Pointer[Sim, MutUntrackedOrigin]:
         return Pointer[Sim, MutUntrackedOrigin](unsafe_from_address=self.sim)
@@ -345,7 +370,7 @@ struct Db(Movable):
         var b = List[UInt8](length=64, fill=0)
         var a = Int(b.unsafe_ptr())
         st64(a, MAIN_MAGIC)
-        st64(a + 8, VERSION | (UInt64(self.dim) << 32))
+        st64(a + 8, self.format_word())
         st64(a + 16, UInt64(self.extent_rows))
         st64(a + 24, UInt64(rows))
         st64(a + 32, UInt64(txn))
@@ -366,7 +391,7 @@ struct Db(Movable):
         var b = List[UInt8](length=WAL_HDR, fill=0)
         var a = Int(b.unsafe_ptr())
         st64(a, WAL_MAGIC)
-        st64(a + 8, VERSION | (UInt64(self.dim) << 32))
+        st64(a + 8, self.format_word())
         st64(a + 16, self.salt)
         st64(a + 24, hash_bytes(WAL_MAGIC, a, 24))
         var ok = self.wr(WALF, 0, a, WAL_HDR)
@@ -381,10 +406,22 @@ struct Db(Movable):
         self.f_vec.clear()
         self.a_vec.clear()
         self.a_tag.clear()
+        self.a_enc.clear()
+        self.a_aux.clear()
         self.chain_tail = seed_of(self.salt)
         self.pub_slot = 0
 
-    def index_frame(mut self, txn: Int, kind: UInt64, id: Int, tag: Int64, vec: Int, chain: UInt64):
+    def index_frame(mut self, txn: Int, kind: UInt64, id: Int, tag: Int64, vec: Int, chain: UInt64) -> Int32:
+        if kind == APPEND:
+            var ea = len(self.a_enc)
+            var xa = len(self.a_aux)
+            self.a_enc.resize(ea + self.enc_bytes(), 0)
+            self.a_aux.resize(xa + AUX, 0)
+            var st = encode_row(self.dtype, fptr(vec), self.dim, Int(self.a_enc.unsafe_ptr()) + ea, fmut(Int(self.a_aux.unsafe_ptr()) + xa * 4))
+            if st != OK:
+                self.a_enc.resize(ea, 0)
+                self.a_aux.resize(xa, 0)
+                return st
         self.f_txn.append(txn)
         self.f_kind.append(kind)
         self.f_id.append(id)
@@ -396,6 +433,7 @@ struct Db(Movable):
             copy_bytes(Int(self.a_vec.unsafe_ptr()) + at * 4, vec, self.dim * 4)
             self.a_tag.append(tag)
         self.chain_tail = chain
+        return OK
 
     def encode_frame(self, a: Int, txn: Int, kind: UInt64, commit: Bool, id: Int, tag: Int64, vec: Int, prev: UInt64) -> UInt64:
         zero_bytes(a, FRAME_HDR)
@@ -491,12 +529,13 @@ def open_fd(path: Int, suffix: Bool) -> Int:
     return fd
 
 
-def load_main(mut db: Db, want_dim: Int, want_extent: Int) -> Int32:
+def load_main(mut db: Db, want_dim: Int, want_extent: Int, want_dtype: Int32) -> Int32:
     var size = db.fsize(MAIN)
     if size == 0:
         if want_dim <= 0 or want_extent <= 0:
             return E_ARG
         db.dim = want_dim
+        db.dtype = F32 if want_dtype < 0 else want_dtype
         db.extent_rows = want_extent
         db.hdr_slot = 1
         if not db.trunc(MAIN, DATA_OFF) or not db.write_main_header(0, 0) or not db.sync(MAIN):
@@ -510,15 +549,17 @@ def load_main(mut db: Db, want_dim: Int, want_extent: Int) -> Int32:
     for slot in range(2):
         if not db.rd(MAIN, slot * SLOT_BYTES, a, 64):
             return E_IO
-        if ld64(a) != MAIN_MAGIC or ld64(a + 48) != hash_bytes(MAIN_MAGIC, a, 48) or (ld64(a + 8) & 0xFFFFFFFF) != VERSION:
+        if ld64(a) != MAIN_MAGIC or ld64(a + 48) != hash_bytes(MAIN_MAGIC, a, 48) or (ld64(a + 8) & 0xFFFF) != VERSION:
             continue
         var seq = ld64(a + 40)
         if best >= 0 and seq <= db.hdr_seq:
             continue
         var dim = Int(ld64(a + 8) >> 32)
         var ext = Int(ld64(a + 16))
-        if dim <= 0 or dim > Int(MAX_DIM) or ext <= 0 or ext > Int(MAX_EXTENT_ROWS):
+        var dt = Int32(Int((ld64(a + 8) >> 16) & 0xFFFF))
+        if dim <= 0 or dim > Int(MAX_DIM) or ext <= 0 or ext > Int(MAX_EXTENT_ROWS) or check_dtype(dt) != OK:
             return E_CORRUPT
+        db.dtype = dt
         best = slot
         db.hdr_seq = seq
         db.dim = dim
@@ -530,8 +571,10 @@ def load_main(mut db: Db, want_dim: Int, want_extent: Int) -> Int32:
         return E_CORRUPT
     if want_dim > 0 and want_dim != db.dim:
         return E_DIM
+    if want_dtype >= 0 and want_dtype != db.dtype:
+        return E_DTYPE
     db.hdr_slot = best
-    db.extent_bytes = ((db.extent_rows * (db.dim * 4 + 9) + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
+    db.set_extent_bytes()
     if db.hdr_rows < 0 or db.hdr_txn < 0 or (db.hdr_rows > 0 and db.live_off(db.hdr_rows - 1) >= size):
         return E_CORRUPT
     return OK
@@ -553,12 +596,27 @@ def load_live(mut db: Db) -> Int32:
     return OK
 
 
+def same_as_main(db: Db, id: Int, vec: Int) -> Bool:
+    var enc = List[UInt8](length=db.enc_bytes(), fill=0)
+    var aux = List[Float32](length=AUX, fill=0)
+    var old = List[UInt8](length=db.enc_bytes() + db.orig_bytes(), fill=0)
+    var o = Int(old.unsafe_ptr())
+    var ok = encode_row(db.dtype, fptr(vec), db.dim, Int(enc.unsafe_ptr()), fmut(Int(aux.unsafe_ptr()))) == OK
+    ok = ok and db.rd(MAIN, db.vec_off(id), o, db.enc_bytes()) and same_bytes(o, Int(enc.unsafe_ptr()), db.enc_bytes())
+    if db.dtype == I8:
+        ok = ok and db.rd(MAIN, db.orig_off(id), o, db.orig_bytes()) and same_bytes(o, vec, db.orig_bytes())
+    _ = enc^
+    _ = aux^
+    _ = old^
+    return ok
+
+
 def recover_wal(mut db: Db) -> Int32:
     var size = db.fsize(WALF)
     var hb = List[UInt8](length=WAL_HDR, fill=0)
     var ha = Int(hb.unsafe_ptr())
     var have = size >= WAL_HDR and db.rd(WALF, 0, ha, WAL_HDR)
-    var good = have and ld64(ha) == WAL_MAGIC and ld64(ha + 24) == hash_bytes(WAL_MAGIC, ha, 24) and ld64(ha + 8) == (VERSION | (UInt64(db.dim) << 32))
+    var good = have and ld64(ha) == WAL_MAGIC and ld64(ha + 24) == hash_bytes(WAL_MAGIC, ha, 24) and ld64(ha + 8) == db.format_word()
     db.salt = ld64(ha + 16) if good else UInt64(db.hdr_seq) + 1
     _ = hb^
     db.reset_wal_index()
@@ -605,12 +663,7 @@ def recover_wal(mut db: Db) -> Int32:
             if id > db.rows or id < 0 or not row_ok(fa + FRAME_HDR, db.dim):
                 return E_CORRUPT
             if id < db.rows:
-                var old = List[Float32](length=db.dim, fill=0)
-                if id >= db.main_rows or not db.rd(MAIN, db.vec_off(id), Int(old.unsafe_ptr()), db.dim * 4):
-                    return E_CORRUPT
-                var same = same_bytes(Int(old.unsafe_ptr()), fa + FRAME_HDR, db.dim * 4)
-                _ = old^
-                if not same:
+                if id >= db.main_rows or not same_as_main(db, id, fa + FRAME_HDR):
                     return E_CORRUPT
                 db.live[id] = 1
             else:
@@ -620,7 +673,8 @@ def recover_wal(mut db: Db) -> Int32:
             if id < 0 or id >= db.rows:
                 return E_CORRUPT
             db.live[id] = 0
-        db.index_frame(txn, kind, id, tag, fa + FRAME_HDR, chains[i])
+        if db.index_frame(txn, kind, id, tag, fa + FRAME_HDR, chains[i]) != OK:
+            return E_CORRUPT
         if commit == 1:
             db.ntx = max(db.ntx, txn)
     _ = fb^
@@ -636,12 +690,14 @@ def recover_wal(mut db: Db) -> Int32:
 
 
 @export("vdb_open")
-def vdb_open(path: Int, dim: Int64, extent_rows: Int64, sim: Int, out_db: Int) abi("C") -> Int32:
+def vdb_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim: Int, out_db: Int) abi("C") -> Int32:
     if out_db == 0 or (path == 0 and sim == 0):
         return E_NULL
     st64(out_db, 0)
     if dim < 0 or dim > MAX_DIM or extent_rows < 0 or extent_rows > MAX_EXTENT_ROWS:
         return E_ARG
+    if storage < -1 or storage > I8:
+        return E_DTYPE
     var fds = List[Int](length=2, fill=-1)
     if sim == 0:
         fds[MAIN] = open_fd(path, False)
@@ -652,15 +708,16 @@ def vdb_open(path: Int, dim: Int64, extent_rows: Int64, sim: Int, out_db: Int) a
                     _ = external_call["close", c_int](c_int(f))
             return E_IO
     var db = Db(
-        sim, fds^, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0,
+        sim, fds^, 0, F32, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0,
         List[Int](), List[UInt64](), List[Int](), List[UInt64](), List[Int](), List[Float32](), List[Int64](),
+        List[UInt8](), List[Float32](),
         0, 0, 0, 0, List[UInt8](), List[UInt64](), List[Int](), List[Int64](), List[Float32](),
         List[Bool](length=MAX_READERS, fill=False), List[Int](length=MAX_READERS, fill=0),
         List[UInt64](length=MAX_READERS, fill=0), List[Int](length=MAX_READERS, fill=0), False, 0, 0,
     )
-    var st = load_main(db, Int(dim), Int(extent_rows))
+    var st = load_main(db, Int(dim), Int(extent_rows), storage)
     if st == OK:
-        db.extent_bytes = ((db.extent_rows * (db.dim * 4 + 9) + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
+        db.set_extent_bytes()
         db.hdr_durable_txn = db.hdr_txn
         st = load_live(db)
     if st == OK:
@@ -700,8 +757,13 @@ def vdb_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
     if vec == 0 or out_id == 0:
         return E_NULL
     var db = dbp(h)
-    if not row_ok(vec, db[].dim):
-        return E_DATA_NONFINITE
+    var enc = List[UInt8](length=db[].enc_bytes(), fill=0)
+    var aux = List[Float32](length=AUX, fill=0)
+    st = encode_row(db[].dtype, fptr(vec), db[].dim, Int(enc.unsafe_ptr()), fmut(Int(aux.unsafe_ptr())))
+    _ = enc^
+    _ = aux^
+    if st != OK:
+        return st
     var id = db[].rows
     var at = len(db[].p_vec)
     db[].p_vec.resize(at + db[].dim, 0)
@@ -760,7 +822,7 @@ def vdb_commit(h: Int, out_txn: Int) abi("C") -> Int32:
     if not db[].wr(WALF, WAL_HDR + slot * fs, base, n * fs):
         return E_IO
     for j in range(n):
-        db[].index_frame(txn, db[].p_kind[j], db[].p_id[j], db[].p_tag[j], base + j * fs + FRAME_HDR, chains[j])
+        _ = db[].index_frame(txn, db[].p_kind[j], db[].p_id[j], db[].p_tag[j], base + j * fs + FRAME_HDR, chains[j])
     _ = buf^
     db[].ntx = txn
     db[].p_kind.clear()
@@ -809,8 +871,13 @@ def vdb_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
             if db[].f_kind[i] == APPEND:
                 var a = db[].f_vec[i]
                 tagb[0] = db[].a_tag[a]
-                if not db[].wr(MAIN, db[].vec_off(id), Int(db[].a_vec.unsafe_ptr()) + a * db[].dim * 4, db[].dim * 4):
+                if not db[].wr(MAIN, db[].vec_off(id), Int(db[].a_enc.unsafe_ptr()) + a * db[].enc_bytes(), db[].enc_bytes()):
                     return E_IO
+                if db[].dtype == I8:
+                    if not db[].wr(MAIN, db[].orig_off(id), Int(db[].a_vec.unsafe_ptr()) + a * db[].dim * 4, db[].orig_bytes()):
+                        return E_IO
+                    if not db[].wr(MAIN, db[].aux_off(id), Int(db[].a_aux.unsafe_ptr()) + a * AUX * 4, db[].aux_bytes()):
+                        return E_IO
                 if not db[].wr(MAIN, db[].tag_off(id), Int(tagb.unsafe_ptr()), 8):
                     return E_IO
                 if not db[].wr(MAIN, db[].live_off(id), Int(one.unsafe_ptr()), 1):
@@ -946,15 +1013,30 @@ def vdb_reader_view(h: Int, r: Int64, cap: Int64, out_live: Int, out_tags: Int, 
         return E_ARG
     var dim = db[].dim
     var first_tail = tail_start(db[], Int(r))
+    var h16 = List[Float16](length=dim, fill=0)
+    var hp = Int(h16.unsafe_ptr())
     for id in range(n):
         st8(out_live + id, v.live[id])
+        var dst = out_vecs + id * dim * 4
         if id < v.main_rows:
-            _ = db[].rd(MAIN, db[].vec_off(id), out_vecs + id * dim * 4, dim * 4)
+            if db[].dtype == F32:
+                _ = db[].rd(MAIN, db[].vec_off(id), dst, dim * 4)
+            elif db[].dtype == I8:
+                _ = db[].rd(MAIN, db[].orig_off(id), dst, dim * 4)
+            else:
+                _ = db[].rd(MAIN, db[].vec_off(id), hp, dim * 2)
             _ = db[].rd(MAIN, db[].tag_off(id), out_tags + id * 8, 8)
         else:
             var a = first_tail + id - v.main_rows
-            copy_bytes(out_vecs + id * dim * 4, Int(db[].a_vec.unsafe_ptr()) + a * dim * 4, dim * 4)
+            if db[].dtype == F16:
+                copy_bytes(hp, Int(db[].a_enc.unsafe_ptr()) + a * dim * 2, dim * 2)
+            else:
+                copy_bytes(dst, Int(db[].a_vec.unsafe_ptr()) + a * dim * 4, dim * 4)
             st64(out_tags + id * 8, UInt64(db[].a_tag[a]))
+        if db[].dtype == F16:
+            for d in range(dim):
+                fmut(dst)[unsafe_offset=d] = h16[d].cast[DType.float32]()
+    _ = h16^
     return OK
 
 
@@ -1002,17 +1084,23 @@ def vdb_reader_search(
             continue
         var data: Int
         var tags: Int
+        var aux: Int
+        var orig: Int
         if seg < nseg - 1:
             data = m + db[].vec_off(lo)
             tags = m + db[].tag_off(lo)
+            aux = m + db[].aux_off(lo)
+            orig = m + db[].orig_off(lo)
         else:
             lo = v.main_rows
             var a = tail_start(db[], Int(r))
-            data = Int(db[].a_vec.unsafe_ptr()) + a * dim * 4
+            data = Int(db[].a_enc.unsafe_ptr()) + a * db[].enc_bytes()
             tags = Int(db[].a_tag.unsafe_ptr()) + a * 8
-        st = vdb_search(
-            data, Int64(n), Int64(dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq, filter_on, filter_tags,
-            k, metric, nchunks, Int(e_ids.unsafe_ptr()), Int(e_sc.unsafe_ptr()), Int(e_cnt.unsafe_ptr()),
+            aux = Int(db[].a_aux.unsafe_ptr()) + a * AUX * 4
+            orig = Int(db[].a_vec.unsafe_ptr()) + a * dim * 4
+        st = vdb_search_ex(
+            data, db[].dtype, aux, orig, Int64(n), Int64(dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq,
+            filter_on, filter_tags, k, metric, nchunks, Int(e_ids.unsafe_ptr()), Int(e_sc.unsafe_ptr()), Int(e_cnt.unsafe_ptr()), 0,
         )
         if st != OK:
             break
@@ -1036,7 +1124,7 @@ def vdb_info(h: Int, dst: Int) abi("C") -> Int32:
     if h == 0 or dst == 0:
         return E_NULL
     var db = dbp(h)
-    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0]
+    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype)]
     for i in range(len(vals)):
         st64(dst + i * 8, UInt64(vals[i]))
     return OK

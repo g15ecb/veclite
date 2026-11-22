@@ -7,7 +7,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = ctypes.CDLL(os.environ.get("VDB_LIB") or os.path.join(ROOT, "build", "libvdb.dylib"))
 I, I32, P = ctypes.c_int64, ctypes.c_int32, ctypes.c_void_p
 SIGS = {
-    "vdb_open": [ctypes.c_char_p, I, I, I, P],
+    "vdb_open": [ctypes.c_char_p, I, I, I32, I, P],
     "vdb_close": [I],
     "vdb_append": [I, P, I, P],
     "vdb_delete": [I, I],
@@ -21,7 +21,8 @@ SIGS = {
 for name, args in SIGS.items():
     getattr(LIB, name).argtypes = args
     getattr(LIB, name).restype = I32
-INFO = ["rows", "ntx", "published", "hdr_txn", "wal_frames", "salt", "main_rows", "poisoned"]
+INFO = ["rows", "ntx", "published", "hdr_txn", "wal_frames", "salt", "main_rows", "poisoned", "dtype"]
+DTYPES = {"f32": 0, "f16": 1, "i8": 2}
 
 
 def addr(a):
@@ -38,9 +39,9 @@ def check(rc, what):
 
 
 class Store:
-    def __init__(self, path, dim, extent_rows=0):
+    def __init__(self, path, dim, extent_rows=0, storage="f32"):
         out = np.zeros(1, dtype=np.int64)
-        check(LIB.vdb_open(path.encode(), dim, extent_rows or max(1024, (64 << 20) // (dim * 4)), 0, addr(out)), "open")
+        check(LIB.vdb_open(path.encode(), dim, extent_rows or max(1024, (64 << 20) // (dim * 4)), DTYPES[storage], 0, addr(out)), "open")
         self.h, self.dim = int(out[0]), dim
         self._id = np.zeros(1, dtype=np.int64)
 

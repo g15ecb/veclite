@@ -276,6 +276,163 @@ def demoTag (c : Cand) : Bool := c.id % 2 == 1 || c.id == 4
 #eval mergeLocals 3 ([[⟨1, 5⟩, ⟨2, 6⟩], [⟨3, 0⟩, ⟨1, 1⟩, ⟨2, 2⟩], [⟨1, 3⟩, ⟨0, 4⟩]].map (scanChunk 3 demoTag))
 #eval (isort (demoRows.filter demoTag)).take 3
 
+section Rescore
+
+open TotalOrd
+
+variable {β : Type} [TotalOrd β]
+
+def strictlyBelow (x y : β) : Bool := decide (le y x) && !decide (le x y)
+
+theorem le_refl' (x : β) : le x x := (TotalOrd.total x x).elim id id
+
+theorem count_below_take : ∀ (M : List β) (k : Nat) (x : β), Sorted M → x ∈ M.take k →
+    M.countP (strictlyBelow x) < k := by
+  intro M
+  induction M with
+  | nil => intro k x _ h; simp at h
+  | cons y M ih =>
+    intro k x hs hx
+    cases k with
+    | zero => simp at hx
+    | succ k =>
+      simp only [Sorted, List.pairwise_cons] at hs
+      simp only [List.take_succ_cons, List.mem_cons] at hx
+      rw [List.countP_cons]
+      rcases hx with rfl | hx
+      · have h0 : M.countP (strictlyBelow x) = 0 := List.countP_eq_zero.mpr (fun z hz => by
+          simp [strictlyBelow, hs.1 z hz])
+        simp [h0, strictlyBelow, le_refl']
+      · have := ih k x hs.2 hx
+        split <;> omega
+
+theorem isort_filter (p : β → Bool) (L : List β) : isort (L.filter p) = (isort L).filter p :=
+  eq_of_perm_sorted _ _ (isort_sorted _) ((isort_sorted L).filter p)
+    ((isort_perm _).trans ((isort_perm L).filter p).symm)
+
+omit [TotalOrd β] in
+theorem take_filter_of_all (p : β → Bool) : ∀ (M : List β) (k : Nat),
+    (∀ x ∈ M.take k, p x = true) → (M.filter p).take k = M.take k := by
+  intro M
+  induction M with
+  | nil => intro k _; simp
+  | cons y M ih =>
+    intro k h
+    cases k with
+    | zero => simp
+    | succ k =>
+      have hy : p y = true := h y (by simp)
+      simp only [List.filter_cons, hy, ite_true, List.take_succ_cons]
+      rw [ih k (fun x hx => h x (by simp [hx]))]
+
+theorem isort_eq_of_mem_iff (A B : List β) (ha : A.Nodup) (hb : B.Nodup) (h : ∀ x, x ∈ A ↔ x ∈ B) :
+    isort A = isort B :=
+  eq_of_perm_sorted _ _ (isort_sorted _) (isort_sorted _)
+    ((isort_perm A).trans (((List.perm_ext_iff_of_nodup ha hb).mpr h).trans (isort_perm B).symm))
+
+theorem take_before_drop (M : List β) (k : Nat) (hs : Sorted M) (x : β) (hx : x ∈ M) (hnot : x ∉ M.take k) :
+    ∀ t ∈ M.take k, le t x := by
+  rw [← List.take_append_drop k M] at hs hx
+  have hd : x ∈ M.drop k := by
+    rcases List.mem_append.mp hx with h | h
+    · exact absurd h hnot
+    · exact h
+  intro t ht
+  exact (List.pairwise_append.mp hs).2.2 t ht x hd
+
+end Rescore
+
+def lowCand (lo : Cand → Int) (c : Cand) : Cand := ⟨lo c, c.id⟩
+
+def upCand (up : Cand → Int) (c : Cand) : Cand := ⟨up c, c.id⟩
+
+theorem below_of_score_lt (x y : Cand) (h : y.score < x.score) : strictlyBelow x y = true := by
+  simp only [strictlyBelow, Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq, decide_eq_false_iff_not]
+  show candLe y x ∧ ¬ candLe x y
+  unfold candLe; omega
+
+theorem rescore_exact (L : List Cand) (k : Nat) (lo up : Cand → Int) (τ : Int)
+    (hb : ∀ c ∈ L, lo c ≤ c.score ∧ c.score ≤ up c)
+    (hτ : k ≤ L.countP (fun c => decide (up c ≤ τ)) ∨ ∀ c ∈ L, lo c ≤ τ) :
+    (isort (L.filter (fun c => decide (lo c ≤ τ)))).take k = (isort L).take k := by
+  rw [isort_filter]
+  apply take_filter_of_all
+  intro x hx
+  have hxL : x ∈ L := (isort_perm L).subset (List.mem_of_mem_take hx)
+  rcases hτ with hcnt | hall
+  · apply decide_eq_true
+    apply Decidable.byContradiction
+    intro hne
+    have hlt := count_below_take (isort L) k x (isort_sorted L) hx
+    rw [(isort_perm L).countP_eq] at hlt
+    have hmono : L.countP (fun c => decide (up c ≤ τ)) ≤ L.countP (strictlyBelow x) :=
+      List.countP_mono_left (fun y hy h1 => by
+        have h1' : up y ≤ τ := of_decide_eq_true h1
+        exact below_of_score_lt x y (by have := (hb y hy).2; have := (hb x hxL).1; omega))
+    omega
+  · exact decide_eq_true (hall x hxL)
+
+theorem tau_valid (L : List Cand) (k : Nat) (up : Cand → Int) (τ : Int)
+    (hlen : ((isort (L.map (upCand up))).take k).length = k)
+    (hmax : ∀ t ∈ (isort (L.map (upCand up))).take k, t.score ≤ τ) :
+    k ≤ L.countP (fun c => decide (up c ≤ τ)) := by
+  have h1 : ((isort (L.map (upCand up))).take k).countP (fun t => decide (t.score ≤ τ)) = k := by
+    rw [List.countP_eq_length.mpr (fun t ht => decide_eq_true (hmax t ht)), hlen]
+  have h2 := (List.take_sublist k (isort (L.map (upCand up)))).countP_le (p := fun t => decide (t.score ≤ τ))
+  rw [h1, (isort_perm _).countP_eq, List.countP_map] at h2
+  exact h2
+
+theorem candidates_complete (L : List Cand) (M : Nat) (lo : Cand → Int) (τ : Int)
+    (hover : ((isort (L.map (lowCand lo))).take M).length < M ∨ ∃ t ∈ (isort (L.map (lowCand lo))).take M, τ < t.score) :
+    ∀ c ∈ L, lo c ≤ τ → lowCand lo c ∈ (isort (L.map (lowCand lo))).take M := by
+  intro c hc hle
+  apply Decidable.byContradiction
+  intro hnot
+  have hmem : lowCand lo c ∈ isort (L.map (lowCand lo)) := (isort_perm _).symm.subset (List.mem_map.mpr ⟨c, hc, rfl⟩)
+  rcases hover with hshort | ⟨t, ht, hτt⟩
+  · have : ((isort (L.map (lowCand lo))).take M) = isort (L.map (lowCand lo)) := by
+      apply List.take_of_length_le
+      rw [List.length_take] at hshort
+      omega
+    rw [this] at hnot
+    exact hnot hmem
+  · have hle' := take_before_drop _ M (isort_sorted _) _ hmem hnot t ht
+    have : t.score ≤ lo c := by
+      have h := hle'
+      show t.score ≤ (lowCand lo c).score
+      unfold candLe at h
+      change t.score < (lowCand lo c).score ∨ (t.score = (lowCand lo c).score ∧ t.id ≤ (lowCand lo c).id) at h
+      omega
+    omega
+
+theorem int8_search_exact (L : List Cand) (k M : Nat) (lo up : Cand → Int) (τ : Int)
+    (hb : ∀ c ∈ L, lo c ≤ c.score ∧ c.score ≤ up c)
+    (hτ : (((isort (L.map (upCand up))).take k).length = k ∧ ∀ t ∈ (isort (L.map (upCand up))).take k, t.score ≤ τ)
+          ∨ ∀ c ∈ L, lo c ≤ τ)
+    (hover : ((isort (L.map (lowCand lo))).take M).length < M ∨ ∃ t ∈ (isort (L.map (lowCand lo))).take M, τ < t.score) :
+    (isort (L.filter (fun c => decide (lowCand lo c ∈ (isort (L.map (lowCand lo))).take M) && decide (lo c ≤ τ)))).take k
+      = (isort L).take k := by
+  have hfilter : L.filter (fun c => decide (lowCand lo c ∈ (isort (L.map (lowCand lo))).take M) && decide (lo c ≤ τ))
+      = L.filter (fun c => decide (lo c ≤ τ)) := by
+    apply List.filter_congr
+    intro c hc
+    by_cases h : lo c ≤ τ
+    · simp [h, candidates_complete L M lo τ hover c hc h]
+    · simp [h]
+  rw [hfilter]
+  apply rescore_exact L k lo up τ hb
+  rcases hτ with ⟨hlen, hmax⟩ | hall
+  · exact Or.inl (tau_valid L k up τ hlen hmax)
+  · exact Or.inr hall
+
+theorem candidate_order_free (A B : List Cand) (ha : A.Nodup) (hb : B.Nodup) (h : ∀ x, x ∈ A ↔ x ∈ B) (k : Nat) :
+    (isort A).take k = (isort B).take k := by
+  rw [isort_eq_of_mem_iff A B ha hb h]
+
+#print axioms rescore_exact
+#print axioms int8_search_exact
+#print axioms candidate_order_free
+
 end TopK
 
 #print axioms TopK.topk_correct

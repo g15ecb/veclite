@@ -13,6 +13,7 @@
 #define NREAD 3
 
 static int failures = 0, checks = 0;
+static int32_t storage = VDB_F32;
 static long io_crashes = 0, idle_crashes = 0, restarts = 0, wal_over_ckpt = 0, lost_unacked = 0, searches = 0;
 
 #define CHECK(cond, ...)                                          \
@@ -37,7 +38,12 @@ static uint64_t rnd(void) {
 static int64_t below(int64_t n) { return (int64_t)(rnd() % (uint64_t)n); }
 
 static void vec_of(int64_t id, float *v) {
-    for (int d = 0; d < DIM; d++) v[d] = (float)((id * 31 + d * 7) % 13) - 6.0f + (d == 0 ? 0.5f : 0.0f);
+    for (int d = 0; d < DIM; d++) v[d] = ((float)((id * 31 + d * 7) % 13) - 6.0f + (d == 0 ? 0.5f : 0.0f)) / 3.0f + (float)(id % 7) * 1e-4f;
+}
+
+static void stored_form(float *v) {
+    if (storage == VDB_F16)
+        for (int d = 0; d < DIM; d++) v[d] = (float)(_Float16)v[d];
 }
 static int64_t tag_of(int64_t id) { return id % 5; }
 
@@ -86,6 +92,7 @@ static void check_view(int64_t db, int64_t r, int64_t mark, const char *ctx) {
     if (rc != VDB_OK || n != s.n) return;
     for (int64_t i = 0; i < n; i++) {
         vec_of(i, want);
+        stored_form(want);
         CHECK(live[i] == s.live[i], "%s readerSnapshot live row %lld got %d want %d (mark %lld)", ctx, (long long)i, live[i], s.live[i], (long long)mark);
         CHECK(tags[i] == tag_of(i) && memcmp(vecs + i * DIM, want, sizeof want) == 0, "%s readerSnapshot content row %lld", ctx, (long long)i);
     }
@@ -129,7 +136,7 @@ static void reopen(world *w, const char *ctx) {
     vdb_close(w->db);
     w->db = 0;
     CHECK(vdb_sim_crash(w->sim, rnd()) == VDB_OK, "crash");
-    int rc = vdb_open(NULL, DIM, EXT, w->sim, &w->db);
+    int rc = vdb_open(NULL, DIM, EXT, storage, w->sim, &w->db);
     CHECK(rc == VDB_OK, "%s reopen rc %d", ctx, rc);
     if (rc != VDB_OK) {
         w->db = 0;
@@ -163,7 +170,7 @@ static int run_workload(uint64_t seed, int steps) {
     written = acked = 0;
     world w = {0};
     CHECK(vdb_sim_new(&w.sim) == VDB_OK, "sim");
-    CHECK(vdb_open(NULL, DIM, EXT, w.sim, &w.db) == VDB_OK, "open");
+    CHECK(vdb_open(NULL, DIM, EXT, storage, w.sim, &w.db) == VDB_OK, "open");
     for (int i = 0; i < NREAD; i++) w.active[i] = -1;
     float v[DIM];
     for (int step = 0; step < steps && w.db; step++) {
@@ -270,14 +277,14 @@ static void test_api(void) {
     vec_of(0, v);
     memcpy(nanv, v, sizeof v);
     nanv[3] = NAN;
-    CHECK(vdb_open(NULL, DIM, EXT, 0, &db) == VDB_E_NULL, "open null path");
+    CHECK(vdb_open(NULL, DIM, EXT, storage, 0, &db) == VDB_E_NULL, "open null path");
     CHECK(vdb_sim_new(NULL) == VDB_E_NULL, "sim null");
     vdb_sim_new(&sim);
-    CHECK(vdb_open(NULL, 0, EXT, sim, &db) == VDB_E_ARG, "create needs dim");
-    CHECK(vdb_open(NULL, -1, EXT, sim, &db) == VDB_E_ARG, "neg dim");
-    CHECK(vdb_open(NULL, DIM, -1, sim, &db) == VDB_E_ARG, "neg extent");
-    CHECK(vdb_open(NULL, DIM, EXT, sim, NULL) == VDB_E_NULL, "null out");
-    CHECK(vdb_open(NULL, DIM, EXT, sim, &db) == VDB_OK, "open");
+    CHECK(vdb_open(NULL, 0, EXT, storage, sim, &db) == VDB_E_ARG, "create needs dim");
+    CHECK(vdb_open(NULL, -1, EXT, storage, sim, &db) == VDB_E_ARG, "neg dim");
+    CHECK(vdb_open(NULL, DIM, -1, storage, sim, &db) == VDB_E_ARG, "neg extent");
+    CHECK(vdb_open(NULL, DIM, EXT, storage, sim, NULL) == VDB_E_NULL, "null out");
+    CHECK(vdb_open(NULL, DIM, EXT, storage, sim, &db) == VDB_OK, "open");
     CHECK(vdb_append(db, nanv, 0, &id) == VDB_E_DATA_NONFINITE, "nan row");
     CHECK(vdb_append(db, NULL, 0, &id) == VDB_E_NULL, "null vec");
     CHECK(vdb_append(db, v, 0, NULL) == VDB_E_NULL, "null id");
@@ -301,10 +308,21 @@ static void test_api(void) {
     CHECK(vdb_reader_search(db, 0, NULL, 1, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VDB_E_NULL, "search null q");
     CHECK(vdb_reader_search(db, 0, q, 1, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VDB_OK && cnt == 0, "search deleted row");
     vdb_close(db);
-    int32_t drc = vdb_open(NULL, DIM + 1, EXT, sim, &db);
+    int32_t drc = vdb_open(NULL, DIM + 1, EXT, storage, sim, &db);
     CHECK(drc == VDB_E_DIM, "dim mismatch rc %d", drc);
-    drc = vdb_open(NULL, 0, 0, sim, &db);
+    drc = vdb_open(NULL, 0, 0, -1, sim, &db);
     CHECK(drc == VDB_OK, "open existing with dim 0 rc %d", drc);
+    int64_t dinfo[VDB_INFO_LEN];
+    vdb_info(db, dinfo);
+    CHECK(dinfo[VDB_INFO_DTYPE] == storage, "stored dtype %lld want %d", (long long)dinfo[VDB_INFO_DTYPE], storage);
+    vdb_close(db);
+    CHECK(vdb_open(NULL, 0, 0, (storage + 1) % 3, sim, &db) == VDB_E_DTYPE, "dtype mismatch");
+    CHECK(vdb_open(NULL, 0, 0, 3, sim, &db) == VDB_E_DTYPE, "invalid storage");
+    CHECK(vdb_open(NULL, 0, 0, -2, sim, &db) == VDB_E_DTYPE, "invalid storage neg");
+    CHECK(vdb_open(NULL, 0, 0, storage, sim, &db) == VDB_OK, "reopen same dtype");
+    float huge[DIM] = {70000.0f};
+    int64_t hid;
+    CHECK(vdb_append(db, huge, 0, &hid) == (storage == VDB_F16 ? VDB_E_RANGE : VDB_OK), "f16 range on append");
     vdb_close(db);
     vdb_sim_free(sim);
 
@@ -314,7 +332,7 @@ static void test_api(void) {
     unlink(path);
     char wal[64];
     snprintf(wal, sizeof wal, "%s-wal", path);
-    CHECK(vdb_open(path, DIM, EXT, 0, &db) == VDB_OK, "real open");
+    CHECK(vdb_open(path, DIM, EXT, storage, 0, &db) == VDB_OK, "real open");
     for (int64_t i = 0; i < 10; i++) {
         vec_of(i, v);
         CHECK(vdb_append(db, v, tag_of(i), &id) == VDB_OK, "real append");
@@ -325,7 +343,7 @@ static void test_api(void) {
     vdb_info(db, info);
     CHECK(info[VDB_INFO_HDR_TXN] == 1 && info[VDB_INFO_WAL_FRAMES] == 0, "real checkpoint restarted wal");
     vdb_close(db);
-    CHECK(vdb_open(path, DIM, EXT, 0, &db) == VDB_OK, "real reopen");
+    CHECK(vdb_open(path, DIM, EXT, storage, 0, &db) == VDB_OK, "real reopen");
     vdb_info(db, info);
     CHECK(info[VDB_INFO_ROWS] == 10 && info[VDB_INFO_NTX] == 1, "real reopen rows %lld", (long long)info[VDB_INFO_ROWS]);
     vdb_reader_begin(db, &r);
@@ -339,13 +357,14 @@ static void test_api(void) {
     fseek(f, 4096 + 24, SEEK_SET);
     fputc(0x7f, f);
     fclose(f);
-    CHECK(vdb_open(path, DIM, EXT, 0, &db) == VDB_E_CORRUPT, "corrupt headers");
+    CHECK(vdb_open(path, DIM, EXT, storage, 0, &db) == VDB_E_CORRUPT, "corrupt headers");
     unlink(path);
     unlink(wal);
 }
 
 int main(int argc, char **argv) {
     int seeds = argc > 1 ? atoi(argv[1]) : 300;
+    storage = argc > 4 ? atoi(argv[4]) : VDB_F32;
     int steps = argc > 2 ? atoi(argv[2]) : 200;
     test_api();
     int first = argc > 3 ? atoi(argv[3]) : 1;
@@ -353,7 +372,7 @@ int main(int argc, char **argv) {
         run_workload((uint64_t)s, steps);
         if (failures) printf("failing seed %d\n", s);
     }
-    printf("store_test: %d checks, %d failures | io_crashes %ld idle_crashes %ld restarts %ld wal_replay_over_ckpt %ld lost_unacked_txns %ld searches %ld\n",
-           checks, failures, io_crashes, idle_crashes, restarts, wal_over_ckpt, lost_unacked, searches);
+    printf("store_test[dtype %d]: %d checks, %d failures | io_crashes %ld idle_crashes %ld restarts %ld wal_replay_over_ckpt %ld lost_unacked_txns %ld searches %ld\n",
+           storage, checks, failures, io_crashes, idle_crashes, restarts, wal_over_ckpt, lost_unacked, searches);
     return failures != 0;
 }

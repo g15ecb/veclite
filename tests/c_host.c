@@ -63,7 +63,7 @@ static void test_errors(void) {
     int64_t bad = 0;
     float nanq[2] = {NAN, 1}, infq[2] = {INFINITY, 1}, zeroq[2] = {0, 0};
 
-    CHECK(vdb_abi_version() == 2, "abi");
+    CHECK(vdb_abi_version() == 3, "abi");
     CHECK(vdb_search(NULL, 4, 2, tags, live, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null data");
     CHECK(cnt[0] == 0 && cnt[1] == 0, "counts reset before validation");
     CHECK(vdb_search(data, 4, 2, tags, NULL, q, 2, fo, ft, 2, 0, 1, ids, sc, cnt) == VDB_E_NULL, "null live");

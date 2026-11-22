@@ -15,11 +15,11 @@ DIR = os.environ.get("VDB_BENCH_DIR", os.path.join(ROOT, "scratch", "benchdb"))
 RNG = np.random.default_rng(3)
 
 
-def fresh(name, dim):
+def fresh(name, dim, storage="f32"):
     os.makedirs(DIR, exist_ok=True)
     path = os.path.join(DIR, name)
     remove_db(path)
-    return path, Store(path, dim)
+    return path, Store(path, dim, storage=storage)
 
 
 def med(fn, reps=5):
@@ -111,8 +111,37 @@ def bench_search_tail(n=50000, dim=1536, k=10):
     return rows
 
 
+def bench_dtypes(n=50000, dim=1536, k=10):
+    rows = []
+    vecs = RNG.standard_normal((n, dim), dtype=np.float32)
+    qs = RNG.standard_normal((32, dim), dtype=np.float32)
+    ref = Table(vecs, np.arange(n, dtype=np.int64) % 10, np.ones(n, dtype=np.uint8))
+    truth = ref.search(qs, k)
+    for storage in ("f32", "f16", "i8"):
+        path, st = fresh("dtype", dim, storage)
+        t0 = time.perf_counter()
+        for lo in range(0, n, 1024):
+            st.append_rows(vecs[lo : lo + 1024], np.arange(lo, min(n, lo + 1024)) % 10)
+            st.commit()
+        t_ingest = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        st.checkpoint()
+        t_ckpt = time.perf_counter() - t0
+        got = st.search(qs, k)
+        recall = float(np.mean([len(np.intersect1d(a[0], b[0])) / k for a, b in zip(got, truth)]))
+        row = {"storage": storage, "n": n, "dim": dim, "ingest_rows_per_s": n / t_ingest, "checkpoint_s": t_ckpt,
+               "main_file_mb": os.path.getsize(path) / 1e6, "recall_vs_f32": recall}
+        for b in (1, 32):
+            row[f"search_ms_per_q_batch{b}"] = med(lambda: st.search(qs[:b], k)) / b * 1e3
+        rows.append(row)
+        print("dtype", row, flush=True)
+        st.close()
+        remove_db(path)
+    return rows
+
+
 def main():
-    which = sys.argv[1:] or ["commit", "ckpt", "tail"]
+    which = sys.argv[1:] or ["commit", "ckpt", "tail", "dtype"]
     out = {}
     if "commit" in which:
         out["commit"] = bench_commit()
@@ -120,9 +149,14 @@ def main():
         out["checkpoint_recovery"] = bench_checkpoint_recovery()
     if "tail" in which:
         out["search_tail"] = bench_search_tail()
+    if "dtype" in which:
+        out["store_dtype"] = bench_dtypes()
     os.makedirs(os.path.join(ROOT, "results"), exist_ok=True)
-    with open(os.path.join(ROOT, "results", "store_bench.json"), "w") as f:
-        json.dump(out, f, indent=1)
+    path = os.path.join(ROOT, "results", "store_bench.json")
+    merged = json.load(open(path)) if os.path.exists(path) else {}
+    merged.update(out)
+    with open(path, "w") as f:
+        json.dump(merged, f, indent=1)
 
 
 if __name__ == "__main__":

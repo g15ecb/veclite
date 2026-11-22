@@ -79,6 +79,64 @@ def store(res):
         save(fig, "store_search_wal_fraction.png")
 
 
+def dtypes(rows):
+    dims = sorted({r["dim"] for r in rows})
+    style = {"f32": ("C0", "o"), "f16": ("C1", "s"), "i8": ("C2", "^")}
+    fig, axes = plt.subplots(1, len(dims), figsize=(5 * len(dims), 4.2), sharey=True)
+    for ax, dim in zip(axes, dims):
+        for storage, (color, marker) in style.items():
+            for sel, ls in ((1.0, "-"), (0.1, "--")):
+                sub = sorted((r for r in rows if r["dim"] == dim and r["storage"] == storage and r["selectivity"] == sel), key=lambda r: r["batch"])
+                ax.plot([r["batch"] for r in sub], [r["ms_per_q"] for r in sub], ls, marker=marker, color=color,
+                        label=f"{storage}, {sel:.0%} match")
+        ax.set(xscale="log", yscale="log", xlabel="queries per batch", title=f"cosine, n={rows[0]['n']:,}, dim={dim}")
+        ax.grid(True, which="both", alpha=0.3)
+    axes[0].set_ylabel("ms per query (lower is better)")
+    axes[-1].legend(fontsize=8)
+    save(fig, "dtype_batch_dim.png")
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    for storage, (color, marker) in style.items():
+        sub = sorted((r for r in rows if r["storage"] == storage and r["batch"] == 1 and r["selectivity"] == 1.0), key=lambda r: r["dim"])
+        x = [r["dim"] for r in sub]
+        base = {r["dim"]: r["ms_per_q"] for r in rows if r["storage"] == "f32" and r["batch"] == 1 and r["selectivity"] == 1.0}
+        axes[0].plot(x, [base[r["dim"]] / r["ms_per_q"] for r in sub], "-" + marker, color=color, label=storage)
+        axes[1].plot(x, [r["scan_mb"] for r in sub], "-" + marker, color=color, label=storage)
+        axes[2].plot(x, [r["recall_vs_f32"] for r in sub], "-" + marker, color=color, label=f"{storage} recall@10")
+    i8 = [r for r in rows if r["storage"] == "i8" and r["selectivity"] == 1.0]
+    dims_i8 = sorted({r["dim"] for r in i8})
+    rate = [100 * sum(r["fallbacks"] for r in i8 if r["dim"] == d) / sum(r["batch"] for r in i8 if r["dim"] == d) for d in dims_i8]
+    ax2 = axes[2].twinx()
+    ax2.bar(dims_i8, rate, width=200, alpha=0.25, color="C2", label="i8 queries needing f32 fallback (%)")
+    ax2.set(ylabel="i8 fallback to full f32 scan (% of queries)", ylim=(0, 105))
+    axes[0].set(xlabel="dim", ylabel="speed-up vs f32 (batch 1)", title="Single-query speed-up")
+    axes[1].set(xlabel="dim", ylabel="MB scanned per query (stage 1)", yscale="log", title="Bytes scanned before rescoring/fallback")
+    axes[2].set(xlabel="dim", ylabel="recall@10 vs f32 exact", ylim=(0.9, 1.005), title="Accuracy (i8 is exact by construction)")
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, loc="lower left")
+    ax2.legend(fontsize=8, loc="lower right")
+    save(fig, "dtype_tradeoffs.png")
+
+
+def store_dtypes(rows):
+    names = [r["storage"] for r in rows]
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    axes[0].bar(names, [r["main_file_mb"] for r in rows], color=["C0", "C1", "C2"])
+    axes[0].set(ylabel="MB", title=f"Main file size (n={rows[0]['n']:,}, dim={rows[0]['dim']})")
+    axes[1].bar(names, [r["ingest_rows_per_s"] for r in rows], color=["C0", "C1", "C2"])
+    axes[1].set(ylabel="rows / s", title="Durable ingest (1024 rows per commit)")
+    w = 0.38
+    xs = range(len(rows))
+    axes[2].bar([x - w / 2 for x in xs], [r["search_ms_per_q_batch1"] for r in rows], w, label="batch 1")
+    axes[2].bar([x + w / 2 for x in xs], [r["search_ms_per_q_batch32"] for r in rows], w, label="batch 32")
+    axes[2].set_xticks(list(xs), names)
+    axes[2].set(ylabel="ms per query", title="Search through snapshot reader")
+    axes[2].legend()
+    for ax in axes:
+        ax.grid(True, axis="y", alpha=0.3)
+    save(fig, "store_dtypes.png")
+
+
 def formal(res):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     s = res["wal_samples"]
@@ -103,6 +161,10 @@ def main():
         kernel(r)
     if (r := load("store_bench.json")) is not None:
         store(r)
+        if r.get("store_dtype"):
+            store_dtypes(r["store_dtype"])
+    if (r := load("dtype_sweep.json")) is not None:
+        dtypes(r)
     if (r := load("formal_bench.json")) is not None:
         formal(r)
 
