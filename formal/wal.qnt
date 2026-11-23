@@ -11,6 +11,8 @@ module wal {
   const READER_NO_SLOT_BOUND: bool
   const UNSYNCED_RESTART_HDR: bool
   const TRUNCATE_ON_RECOVERY: bool
+  const ROLLBACK_KEEP_FRAMES: bool
+  const ROLLBACK_KEEP_PENDING: bool
 
   type Op = { del: bool, id: int, v: int }
   type Row = { present: bool, v: int, live: bool }
@@ -20,7 +22,7 @@ module wal {
   type Wal = { cache: int -> Slot, disk: int -> Slot, saltC: int, saltD: int, len: int, nextWid: int }
   type Main = { cache: int -> Row, disk: int -> Row, hdrC: int, hdrD: int, phase: str, target: int }
   type Log = { committed: List[List[Op]], pending: List[Op], published: int, pubSlot: int, acked: int }
-  type Ghost = { crashes: int, restarts: int, lostAcked: bool, recoveryBad: bool, tornRecovered: bool, replayedCheckpointed: bool }
+  type Ghost = { rollbacks: int, crashes: int, restarts: int, lostAcked: bool, recoveryBad: bool, tornRecovered: bool, replayedCheckpointed: bool }
 
   var wal: Wal
   var main: Main
@@ -90,7 +92,7 @@ module wal {
     main' = { cache: emptyRows, disk: emptyRows, hdrC: 0, hdrD: 0, phase: "idle", target: 0 },
     log' = { committed: List(), pending: List(), published: 0, pubSlot: 0, acked: 0 },
     readers' = 0.to(NREADERS - 1).mapBy(r => IDLE),
-    ghost' = { crashes: 0, restarts: 0, lostAcked: false, recoveryBad: false, tornRecovered: false, replayedCheckpointed: false },
+    ghost' = { rollbacks: 0, crashes: 0, restarts: 0, lostAcked: false, recoveryBad: false, tornRecovered: false, replayedCheckpointed: false },
   }
 
   action writeFrameWith(o: Op, commit: bool): bool = {
@@ -199,6 +201,21 @@ module wal {
     ghost' = ghost,
   }
 
+  action rollbackTo(m: int): bool = all {
+    m >= 0,
+    m < log.pending.length(),
+    wal' = if (ROLLBACK_KEEP_FRAMES) wal else { ...wal, len: wal.len - (log.pending.length() - m) },
+    log' = if (ROLLBACK_KEEP_PENDING) log else { ...log, pending: log.pending.slice(0, m) },
+    main' = main,
+    readers' = readers,
+    ghost' = { ...ghost, rollbacks: ghost.rollbacks + 1 },
+  }
+
+  action rollback = {
+    nondet m = 0.to(MAXTXN).oneOf()
+    rollbackTo(m)
+  }
+
   action readerBegin = {
     nondet r = readers.keys().filter(r => not(readers.get(r).active)).oneOf()
     all {
@@ -270,7 +287,7 @@ module wal {
     crashWith(hdrHalf, payHalf, saltPick, rowPick, hdrPick)
   }
 
-  action step = any { writeFrame, syncWal, syncWalHeader, ckptApply, ckptSyncData, ckptWriteHdr, ckptSyncHdr, walRestart, readerBegin, readerEnd, crash }
+  action step = any { writeFrame, rollback, syncWal, syncWalHeader, ckptApply, ckptSyncData, ckptWriteHdr, ckptSyncHdr, walRestart, readerBegin, readerEnd, crash }
 
   val readerSnapshot = activeReaders.forall(r => view(readers.get(r)) == stateAt(readers.get(r).mark))
 
@@ -280,7 +297,11 @@ module wal {
 
   val publishedOrder = log.acked <= log.published and log.published <= ntx and main.hdrC <= log.published
 
+  val pendingFramesMatch = wal.len == lastCommitSlot(wal.cache, wal.len) + log.pending.length() or ghost.crashes > 0
+
   val inv = and { readerSnapshot, ackedDurable, recoveryAtomic, publishedOrder }
+
+  val witnessRollbackThenCommit = not(ghost.rollbacks > 0 and ntx > 0 and ghost.crashes > 0)
 
   val witnessTornRecovered = not(ghost.tornRecovered and ghost.crashes > 0 and ntx > 0)
 
@@ -292,37 +313,45 @@ module wal {
 }
 
 module base {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantAckBeforeSync {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = true, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = true, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantCkptIgnoresReaders {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = true, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = true, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantNoChain {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = true, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = true, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantRestartEarly {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = true, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = true, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantSkipDataSync {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = true, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = true, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantReaderNoSlotBound {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = true, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = true, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantUnsyncedRestartHdr {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = true, TRUNCATE_ON_RECOVERY = true).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = true, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
 }
 
 module mutantNoRecoveryTruncate {
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = false).*
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = false, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).*
+}
+
+module mutantRollbackKeepFrames {
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = true, ROLLBACK_KEEP_PENDING = false).*
+}
+
+module mutantRollbackKeepPending {
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = false, TRUNCATE_ON_RECOVERY = true, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = true).*
 }

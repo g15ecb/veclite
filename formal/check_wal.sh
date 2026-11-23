@@ -18,6 +18,10 @@ expect mutantCkptIgnoresReaders fail readerSnapshot
 expect mutantRestartEarly fail inv
 expect mutantSkipDataSync fail inv
 expect mutantNoRecoveryTruncate fail recoveryAtomic
+expect base pass pendingFramesMatch
+expect base fail witnessRollbackThenCommit
+expect mutantRollbackKeepFrames fail inv
+expect mutantRollbackKeepPending fail inv
 expect mutantNoChain pass inv
 expect mutantReaderNoSlotBound pass inv
 for m in fixed unsyncedRestartHdr noRecoveryTruncate; do

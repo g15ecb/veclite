@@ -14,7 +14,7 @@
 
 static int failures = 0, checks = 0;
 static int32_t storage = VECLITE_F32;
-static long io_crashes = 0, idle_crashes = 0, restarts = 0, wal_over_ckpt = 0, lost_unacked = 0, searches = 0;
+static long rollbacks = 0, io_crashes = 0, idle_crashes = 0, restarts = 0, wal_over_ckpt = 0, lost_unacked = 0, searches = 0;
 
 #define CHECK(cond, ...)                                          \
     do {                                                          \
@@ -237,6 +237,25 @@ static int run_workload(uint64_t seed, int steps) {
             idle_crashes++;
             reopen(&w, "idle-crash");
             continue;
+        } else if (act < 97) {
+            int64_t pn = -1, mark = below(w.npend + 1);
+            CHECK(veclite_pending(w.db, &pn) == VECLITE_OK && pn == w.npend, "pending count %lld want %d", (long long)pn, w.npend);
+            CHECK(veclite_rollback(w.db, w.npend + 1) == VECLITE_E_ARG && veclite_rollback(w.db, -1) == VECLITE_E_ARG, "rollback bounds");
+            rc = veclite_rollback(w.db, mark);
+            if (rc == VECLITE_OK) {
+                for (int64_t i = w.npend - 1; i >= mark; i--) {
+                    if (w.pend_del[i]) w.cur.live[w.pend_id[i]] = 1;
+                    else {
+                        w.cur.live[w.pend_id[i]] = 0;
+                        w.cur.n--;
+                    }
+                }
+                rollbacks += w.npend - mark;
+                w.npend = (int)mark;
+                int64_t info[VECLITE_INFO_LEN];
+                veclite_info(w.db, info);
+                CHECK(info[VECLITE_INFO_ROWS] == w.cur.n, "rows after rollback %lld want %lld", (long long)info[VECLITE_INFO_ROWS], (long long)w.cur.n);
+            }
         }
         if (getenv("TRACE")) {
             int64_t ti[VECLITE_INFO_LEN];
@@ -271,6 +290,39 @@ static int run_workload(uint64_t seed, int steps) {
     return failures;
 }
 
+static void test_stale_frame_completion(void) {
+    int64_t sim, db, id, info[VECLITE_INFO_LEN];
+    float v1[DIM], v2[DIM], v0[DIM];
+    vec_of(0, v0);
+    vec_of(1, v1);
+    vec_of(2, v2);
+    int64_t frame = 64 + DIM * (storage == VECLITE_F16 ? 2 : 4);
+    int64_t payload = DIM * 4, half = 64 + payload / 2, full = 64 + payload;
+    CHECK(veclite_sim_new(&sim) == VECLITE_OK, "sim");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, sim, &db) == VECLITE_OK, "open");
+    CHECK(veclite_append(db, v0, 0, &id) == VECLITE_OK && veclite_commit(db, NULL) == VECLITE_OK, "txn 1");
+    CHECK(veclite_append(db, v1, 1, &id) == VECLITE_OK && id == 1, "attempt 1 append");
+    veclite_sim_set_budget(sim, 1);
+    CHECK(veclite_commit(db, NULL) == VECLITE_E_IO, "attempt 1 commit fails at fsync");
+    veclite_close(db);
+    CHECK(veclite_sim_crash_range(sim, 0, half) == VECLITE_OK, "crash keeping header + first half of payload");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, sim, &db) == VECLITE_OK, "reopen 1");
+    veclite_info(db, info);
+    CHECK(info[VECLITE_INFO_ROWS] == 1 && info[VECLITE_INFO_NTX] == 1, "torn attempt 1 dropped: rows %lld", (long long)info[VECLITE_INFO_ROWS]);
+    CHECK(veclite_append(db, v1, 1, &id) == VECLITE_OK && veclite_append(db, v2, 2, &id) == VECLITE_OK, "attempt 2 appends");
+    veclite_sim_set_budget(sim, 1);
+    CHECK(veclite_commit(db, NULL) == VECLITE_E_IO, "attempt 2 commit fails at fsync");
+    veclite_close(db);
+    CHECK(veclite_sim_crash_range(sim, half, full) == VECLITE_OK, "crash keeping only second half of the reused frame");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, sim, &db) == VECLITE_OK, "reopen 2");
+    veclite_info(db, info);
+    CHECK(info[VECLITE_INFO_ROWS] == 1 && info[VECLITE_INFO_NTX] == 1,
+          "recoveryAtomic: stale frame completed by identical bytes resurrected aborted attempt 1 (rows %lld, frame %lld)",
+          (long long)info[VECLITE_INFO_ROWS], (long long)frame);
+    veclite_close(db);
+    veclite_sim_free(sim);
+}
+
 static void test_api(void) {
     int64_t sim, db, id, r;
     float v[DIM], nanv[DIM];
@@ -293,6 +345,16 @@ static void test_api(void) {
     CHECK(veclite_append(db, v, 3, &id) == VECLITE_OK && id == 0, "append");
     CHECK(veclite_delete(db, 0) == VECLITE_OK, "delete pending row");
     CHECK(veclite_delete(db, 0) == VECLITE_E_ID, "double delete");
+    int64_t pn = -1;
+    CHECK(veclite_pending(db, &pn) == VECLITE_OK && pn == 2, "pending 2");
+    CHECK(veclite_pending(db, NULL) == VECLITE_E_NULL, "pending null");
+    CHECK(veclite_rollback(db, 3) == VECLITE_E_ARG && veclite_rollback(db, -1) == VECLITE_E_ARG, "rollback bounds api");
+    CHECK(veclite_rollback(db, 1) == VECLITE_OK && veclite_pending(db, &pn) == VECLITE_OK && pn == 1, "rollback undoes the delete");
+    CHECK(veclite_delete(db, 0) == VECLITE_OK, "row live again after rollback");
+    CHECK(veclite_rollback(db, 0) == VECLITE_OK && veclite_pending(db, &pn) == VECLITE_OK && pn == 0, "rollback all");
+    CHECK(veclite_delete(db, 0) == VECLITE_E_ID, "rolled-back append is gone");
+    CHECK(veclite_append(db, v, 3, &id) == VECLITE_OK && id == 0, "id reused after rollback");
+    CHECK(veclite_delete(db, 0) == VECLITE_OK, "delete again");
     CHECK(veclite_checkpoint(db, NULL) == VECLITE_E_STATE, "checkpoint with pending");
     CHECK(veclite_commit(db, NULL) == VECLITE_OK, "commit");
     CHECK(veclite_reader_end(db, 0) == VECLITE_E_READER, "end inactive");
@@ -367,12 +429,13 @@ int main(int argc, char **argv) {
     storage = argc > 4 ? atoi(argv[4]) : VECLITE_F32;
     int steps = argc > 2 ? atoi(argv[2]) : 200;
     test_api();
+    test_stale_frame_completion();
     int first = argc > 3 ? atoi(argv[3]) : 1;
     for (int s = first; s < first + seeds && failures == 0; s++) {
         run_workload((uint64_t)s, steps);
         if (failures) printf("failing seed %d\n", s);
     }
-    printf("store_test[dtype %d]: %d checks, %d failures | io_crashes %ld idle_crashes %ld restarts %ld wal_replay_over_ckpt %ld lost_unacked_txns %ld searches %ld\n",
-           storage, checks, failures, io_crashes, idle_crashes, restarts, wal_over_ckpt, lost_unacked, searches);
+    printf("store_test[dtype %d]: %d checks, %d failures | io_crashes %ld idle_crashes %ld restarts %ld wal_replay_over_ckpt %ld lost_unacked_txns %ld searches %ld rolled_back_ops %ld\n",
+           storage, checks, failures, io_crashes, idle_crashes, restarts, wal_over_ckpt, lost_unacked, searches, rollbacks);
     return failures != 0;
 }

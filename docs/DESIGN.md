@@ -181,6 +181,44 @@ No Quint model is needed: the kernels are deterministic per chunk, and the merge
 - **Profile at batch 512, dim 1536:** scoring 179 ms, selection 22 ms, merge 8 ms, copies about 2 ms.
 - **Recommendation:** use the GPU only for large unfiltered batches (≥ 128 queries). Everything else stays on the CPU. For the batch path, the next step is simdgroup-matrix scoring, which should beat FAISS.
 
+## Transactions and rollback
+
+- **Pending changes:** `add` and `delete` stage changes in memory, and `commit` writes them to the WAL as one transaction.
+- **Savepoints:** `veclite_pending` returns the number of staged changes, which serves as a savepoint. `veclite_rollback(mark)` discards everything staged after the savepoint and restores row ids and live flags. `mark = 0` drops all staged changes.
+- **Python calls are all-or-nothing:**
+  - `add` checks the whole batch first: non-finite values (`-12`), and float16 range (`-16`). `VecliteError.row` gives the offending row.
+  - Each `add` or `delete` rolls back to its own savepoint if anything fails, including the commit. Earlier staged changes are kept.
+  - `db.rollback()` discards everything staged.
+  - Each `Database` has a lock, because the C library assumes one caller at a time and ctypes releases Python's global lock during calls.
+
+### Quint (`formal/wal.qnt`)
+
+The model's writer can roll back to any savepoint. Rolling back drops the staged operations and the WAL frames written for them (the model writes frames before commit, which is more general than the code, which stages in memory).
+
+| Property | Enforces | Why |
+|---|---|---|
+| `pendingFramesMatch` | WAL frames = committed frames + staged operations | Rollback leaves no orphan frames. |
+| Existing `readerSnapshot`, `ackedDurable`, `recoveryAtomic` | Still hold with rollbacks interleaved | Rolled-back operations never reach a reader, a commit or a recovery. |
+| `witnessRollbackThenCommit` | Reachable | Rollbacks really interleave with commits and crashes in the runs. |
+| Mutant `RollbackKeepFrames` | Must fail | The next commit would carry rolled-back frames, and recovery would replay them. |
+| Mutant `RollbackKeepPending` | Must fail | Rolled-back operations would be committed later (the bug that was found). |
+
+### Tests
+
+- `store_test` adds random rollbacks to the crash workload (about 2,700 rolled-back operations across 300 seeds). It checks the staged count, the row count and the bounds of `rollback` after every step, alongside the existing snapshot, durability and recovery invariants.
+- API tests cover undoing a delete, reusing ids after a rolled-back append, and rejecting out-of-range savepoints.
+- Code mutants `ROLLBACK_KEEP_PENDING` and `ROLLBACK_KEEP_ROWS` are both caught.
+- `test_stale_frame_completion` is a deterministic replay of the Quint `staleFrameCompletion` scenario. It uses `veclite_sim_crash_range`, which keeps a chosen byte range of each unsynced WAL write. Before it existed, the `NO_RECOVERY_TRUNCATE` mutant was only caught by a random seed near 3,000. Adding rollbacks to the workload moved that seed past the limit (to 3,074), so the mutant briefly survived. The directed test catches it on every run, independent of seeds.
+- `tests/python/test_transactions.py` covers:
+  - a failed add leaving nothing behind;
+  - earlier staged changes surviving a failed call;
+  - a failure in the middle of a delete batch;
+  - `rollback()` and id reuse;
+  - float16 range errors reporting the row;
+  - `k` and tag validation;
+  - 5 threads sharing one database;
+  - automatic close when a database is garbage-collected.
+
 ## GPU routing inside the database
 
 `Database.search(..., device="auto" | "cpu" | "gpu")`, also settable per database at `open()`. The C call is `veclite_reader_search_dev`.

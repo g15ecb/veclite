@@ -18,19 +18,22 @@
 #define VECLITE_DEVICE_CPU 1
 #define VECLITE_DEVICE_GPU 2
 
-enum { VECLITE_INFO_ROWS, VECLITE_INFO_NTX, VECLITE_INFO_PUBLISHED, VECLITE_INFO_HDR_TXN, VECLITE_INFO_WAL_FRAMES, VECLITE_INFO_SALT, VECLITE_INFO_MAIN_ROWS, VECLITE_INFO_POISONED, VECLITE_INFO_DTYPE, VECLITE_INFO_DIM, VECLITE_INFO_GPU_ROWS, VECLITE_INFO_LEN };
+enum { VECLITE_INFO_ROWS, VECLITE_INFO_NTX, VECLITE_INFO_PUBLISHED, VECLITE_INFO_HDR_TXN, VECLITE_INFO_WAL_FRAMES, VECLITE_INFO_SALT, VECLITE_INFO_MAIN_ROWS, VECLITE_INFO_POISONED, VECLITE_INFO_DTYPE, VECLITE_INFO_DIM, VECLITE_INFO_GPU_ROWS, VECLITE_INFO_LIVE_ROWS, VECLITE_INFO_LEN };
 
 int32_t veclite_sim_new(int64_t *out_sim);
 int32_t veclite_sim_free(int64_t sim);
 int32_t veclite_sim_set_budget(int64_t sim, int64_t budget);
 int64_t veclite_sim_mutations(int64_t sim);
 int32_t veclite_sim_crash(int64_t sim, uint64_t seed);
+int32_t veclite_sim_crash_range(int64_t sim, int64_t wal_lo, int64_t wal_hi);
 
 int32_t veclite_open(const char *path, int64_t dim, int64_t extent_rows, int32_t storage, int64_t sim, int64_t *out_db);
 int32_t veclite_close(int64_t db);
 int32_t veclite_append(int64_t db, const float *vec, int64_t tag, int64_t *out_id);
 int32_t veclite_delete(int64_t db, int64_t id);
 int32_t veclite_commit(int64_t db, int64_t *out_txn);
+int32_t veclite_pending(int64_t db, int64_t *out_n);
+int32_t veclite_rollback(int64_t db, int64_t mark);
 int32_t veclite_checkpoint(int64_t db, int64_t *out_ckpt_txn);
 int32_t veclite_reader_begin(int64_t db, int64_t *out_reader);
 int32_t veclite_reader_end(int64_t db, int64_t reader);

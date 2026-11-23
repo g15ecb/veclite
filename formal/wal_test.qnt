@@ -2,7 +2,7 @@ module scenarios {
   const UNSYNCED_HDR: bool
   const TRUNCATE: bool
 
-  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = UNSYNCED_HDR, TRUNCATE_ON_RECOVERY = TRUNCATE).* from "./wal"
+  import wal(NIDS = 3, MAXTXN = 4, SLOTS = 5, NREADERS = 2, ACK_BEFORE_SYNC = false, CKPT_IGNORES_READERS = false, NO_CHAIN = false, RESTART_EARLY = false, SKIP_DATA_SYNC = false, READER_NO_SLOT_BOUND = false, UNSYNCED_RESTART_HDR = UNSYNCED_HDR, TRUNCATE_ON_RECOVERY = TRUNCATE, ROLLBACK_KEEP_FRAMES = false, ROLLBACK_KEEP_PENDING = false).* from "./wal"
 
   pure def ins(x: int): Op = { del: false, id: x, v: 1 }
 

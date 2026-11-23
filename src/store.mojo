@@ -23,6 +23,8 @@ comptime MUTANT_RESTART_EARLY = get_defined_bool["VECLITE_MUTANT_RESTART_EARLY"]
 comptime MUTANT_SKIP_DATA_SYNC = get_defined_bool["VECLITE_MUTANT_SKIP_DATA_SYNC"]()
 comptime MUTANT_UNSYNCED_RESTART_HDR = get_defined_bool["VECLITE_MUTANT_UNSYNCED_RESTART_HDR"]()
 comptime MUTANT_NO_RECOVERY_TRUNCATE = get_defined_bool["VECLITE_MUTANT_NO_RECOVERY_TRUNCATE"]()
+comptime MUTANT_ROLLBACK_KEEP_PENDING = get_defined_bool["VECLITE_MUTANT_ROLLBACK_KEEP_PENDING"]()
+comptime MUTANT_ROLLBACK_KEEP_ROWS = get_defined_bool["VECLITE_MUTANT_ROLLBACK_KEEP_ROWS"]()
 
 comptime MAIN_MAGIC: UInt64 = 0x314E49414D424456
 comptime WAL_MAGIC: UInt64 = 0x31304C4157424456
@@ -154,6 +156,19 @@ struct SimFile(Movable):
                     grow(d, off + s + m)
                     copy_bytes(Int(d.unsafe_ptr()) + off + s, Int(self.log.unsafe_ptr()) + self.w_src[i] + s, m)
                 s = e
+        self.disk = d.copy()
+        self.cache = d^
+        self.forget()
+
+    def crash_range(mut self, lo: Int, hi: Int):
+        var d = self.disk.copy()
+        for i in range(len(self.w_off)):
+            var n = self.w_len[i]
+            var a = max(0, lo)
+            var b = min(n, hi)
+            if n > 0 and b > a:
+                grow(d, self.w_off[i] + b)
+                copy_bytes(Int(d.unsafe_ptr()) + self.w_off[i] + a, Int(self.log.unsafe_ptr()) + self.w_src[i] + a, b - a)
         self.disk = d.copy()
         self.cache = d^
         self.forget()
@@ -511,6 +526,19 @@ def veclite_sim_crash(sim: Int, seed: UInt64) abi("C") -> Int32:
     return OK
 
 
+@export("veclite_sim_crash_range")
+def veclite_sim_crash_range(sim: Int, wal_lo: Int64, wal_hi: Int64) abi("C") -> Int32:
+    if sim == 0:
+        return E_NULL
+    if wal_lo < 0 or wal_hi < wal_lo:
+        return E_ARG
+    var s = Pointer[Sim, MutUntrackedOrigin](unsafe_from_address=sim)
+    s[].main.crash_range(0, 0)
+    s[].wal.crash_range(Int(wal_lo), Int(wal_hi))
+    s[].budget = -1
+    return OK
+
+
 def open_fd(path: Int, suffix: Bool) -> Int:
     var n = Int(external_call["strlen", UInt](path))
     var b = List[UInt8](length=n + 5, fill=0)
@@ -775,6 +803,48 @@ def veclite_delete(h: Int, id: Int64) abi("C") -> Int32:
     db[].p_id.append(Int(id))
     db[].p_tag.append(0)
     db[].live[Int(id)] = 0
+    return OK
+
+
+@export("veclite_pending")
+def veclite_pending(h: Int, out_n: Int) abi("C") -> Int32:
+    var st = usable(h)
+    if st != OK:
+        return st
+    if out_n == 0:
+        return E_NULL
+    st64(out_n, UInt64(len(dbp(h)[].p_kind)))
+    return OK
+
+
+@export("veclite_rollback")
+def veclite_rollback(h: Int, mark: Int64) abi("C") -> Int32:
+    var st = usable(h)
+    if st != OK:
+        return st
+    var db = dbp(h)
+    var n = len(db[].p_kind)
+    if mark < 0 or Int(mark) > n:
+        return E_ARG
+    while len(db[].p_kind) > Int(mark):
+        var kind = db[].p_kind.pop()
+        var id = db[].p_id.pop()
+        _ = db[].p_tag.pop()
+        comptime if not MUTANT_ROLLBACK_KEEP_ROWS:
+            if kind == APPEND:
+                db[].rows -= 1
+                _ = db[].live.pop()
+                db[].p_vec.resize(len(db[].p_vec) - db[].dim, 0)
+            else:
+                db[].live[id] = 1
+        else:
+            if kind == APPEND:
+                db[].p_vec.resize(len(db[].p_vec) - db[].dim, 0)
+        comptime if MUTANT_ROLLBACK_KEEP_PENDING:
+            db[].p_kind.append(kind)
+            db[].p_id.append(id)
+            db[].p_tag.append(0)
+            break
     return OK
 
 
@@ -1126,12 +1196,19 @@ def veclite_reader_search(
     return search_cpu(h, r, queries, nq, filter_on, filter_tags, k, metric, nchunks, out_ids, out_scores, out_counts)
 
 
+def live_count(db: Db) -> Int:
+    var c = 0
+    for i in range(db.rows):
+        c += Int(db.live[i])
+    return c
+
+
 @export("veclite_info")
 def veclite_info(h: Int, dst: Int) abi("C") -> Int32:
     if h == 0 or dst == 0:
         return E_NULL
     var db = dbp(h)
-    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype), db[].dim, db[].gpu_rows]
+    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype), db[].dim, db[].gpu_rows, live_count(db[])]
     for i in range(len(vals)):
         st64(dst + i * 8, UInt64(vals[i]))
     return OK

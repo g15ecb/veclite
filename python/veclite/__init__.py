@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import ctypes
 import os
 import sys
+import threading
+import weakref
+from typing import Optional, Sequence, Union
 
 import numpy as np
 
@@ -17,21 +22,28 @@ ERRORS = {
 METRICS = {"l2": 0, "dot": 1, "cosine": 2}
 STORAGE = {"f32": 0, "f16": 1}
 DEVICES = {"auto": 0, "cpu": 1, "gpu": 2}
+MAX_K = 4096
+MAX_BATCH = 4096
+F16_MAX = 65504.0
+_INFO = ["rows", "txn", "published", "checkpointed_txn", "wal_frames", "salt", "main_rows", "poisoned", "storage", "dim",
+         "gpu_rows", "live_rows"]
 _I, _I32, _P = ctypes.c_int64, ctypes.c_int32, ctypes.c_void_p
+
+Tag = Optional[int]
 
 
 class VecliteError(RuntimeError):
-    def __init__(self, code, what):
-        super().__init__(f"{what}: {ERRORS.get(code, 'error')} ({code})")
+    def __init__(self, code: int, what: str, row: Optional[int] = None):
+        where = "" if row is None else f" at row {row}"
+        super().__init__(f"{what}: {ERRORS.get(code, 'error')}{where} ({code})")
         self.code = code
+        self.row = row
 
 
 def _load():
     name = "libveclite.dylib" if sys.platform == "darwin" else "libveclite.so"
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [os.environ.get("VECLITE_LIB"), os.path.join(here, name),
-                  os.path.join(here, "..", "..", "build", name)]
-    for path in candidates:
+    for path in (os.environ.get("VECLITE_LIB"), os.path.join(here, name), os.path.join(here, "..", "..", "build", name)):
         if path and os.path.exists(path):
             lib = ctypes.CDLL(path)
             break
@@ -40,6 +52,7 @@ def _load():
     sigs = {
         "veclite_open": [ctypes.c_char_p, _I, _I, _I32, _I, _P], "veclite_close": [_I],
         "veclite_append": [_I, _P, _I, _P], "veclite_delete": [_I, _I], "veclite_commit": [_I, _P],
+        "veclite_pending": [_I, _P], "veclite_rollback": [_I, _I],
         "veclite_checkpoint": [_I, _P], "veclite_reader_begin": [_I, _P], "veclite_reader_end": [_I, _I],
         "veclite_reader_search_dev": [_I, _I, _P, _I, _P, _P, _I, _I32, _I, _I32, _I, _P, _P, _P, _P],
         "veclite_info": [_I, _P], "veclite_gpu_available": [],
@@ -51,70 +64,102 @@ def _load():
 
 
 _LIB = None
+_LIB_LOCK = threading.Lock()
 
 
 def _lib():
     global _LIB
-    if _LIB is None:
-        _LIB = _load()
+    with _LIB_LOCK:
+        if _LIB is None:
+            _LIB = _load()
     return _LIB
 
 
-def _check(rc, what):
+def _check(rc: int, what: str, row: Optional[int] = None) -> None:
     if rc != 0:
-        raise VecliteError(rc, what)
+        raise VecliteError(rc, what, row)
 
 
 def _ptr(a):
     return None if a is None else a.ctypes.data
 
 
-def gpu_available():
+def _choice(value: str, options: dict, name: str) -> str:
+    if value not in options:
+        raise ValueError(f"{name} must be one of {sorted(options)}")
+    return value
+
+
+def gpu_available() -> bool:
     return _lib().veclite_gpu_available() == 1
 
 
-def _device(device):
-    if device not in DEVICES:
-        raise ValueError(f"device must be one of {sorted(DEVICES)}")
-    return device
+def _close_handle(h: int) -> None:
+    _lib().veclite_close(h)
 
 
 class Database:
-    def __init__(self, path, dim=0, storage=None, extent_rows=0, device="auto", gpu_min_batch=64):
-        if storage is not None and storage not in STORAGE:
-            raise ValueError(f"storage must be one of {sorted(STORAGE)}")
+    def __init__(self, path: Union[str, os.PathLike], dim: int = 0, storage: Optional[str] = None,
+                 extent_rows: int = 0, device: str = "auto", gpu_min_batch: int = 64):
+        if storage is not None:
+            _choice(storage, STORAGE, "storage")
+        if int(dim) < 0:
+            raise ValueError("dim must be >= 0 (0 = take it from an existing file)")
         if int(gpu_min_batch) < 1:
             raise ValueError("gpu_min_batch must be >= 1")
-        self.device = _device(device)
+        self.device = _choice(device, DEVICES, "device")
         self.gpu_min_batch = int(gpu_min_batch)
-        self.last_device = None
-        if dim < 0:
-            raise ValueError("dim must be >= 0 (0 = take it from an existing file)")
+        self.last_device: Optional[str] = None
+        self._lock = threading.RLock()
+        self._h = 0
         out = np.zeros(1, dtype=np.int64)
-        ext = extent_rows or (max(1024, (64 << 20) // (dim * 4)) if dim else 0)
-        _check(_lib().veclite_open(os.fsencode(path), dim, ext, STORAGE.get(storage, -1), 0, _ptr(out)), "open")
+        ext = extent_rows or (max(1024, (64 << 20) // (int(dim) * 4)) if dim else 0)
+        _check(_lib().veclite_open(os.fsencode(path), int(dim), ext, STORAGE.get(storage, -1), 0, _ptr(out)), "open")
         self._h = int(out[0])
+        self._finalizer = weakref.finalize(self, _close_handle, self._h)
         info = self.info()
-        self.dim = info["dim"]
-        self.storage = next(k for k, v in STORAGE.items() if v == info["storage"])
+        self.dim: int = info["dim"]
+        self.storage: str = next(k for k, v in STORAGE.items() if v == info["storage"])
 
-    def _handle(self):
+    def _handle(self) -> int:
         if self._h == 0:
             raise VecliteError(-22, "database is closed")
         return self._h
 
-    def __enter__(self):
+    def __enter__(self) -> "Database":
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc) -> None:
         self.close()
 
-    def close(self):
-        if self._h:
-            _check(_lib().veclite_close(self._h), "close")
-            self._h = 0
+    def __len__(self) -> int:
+        return self.info()["live_rows"]
 
-    def add(self, vectors, tags=None, commit=True):
+    def close(self) -> None:
+        with self._lock:
+            if self._h:
+                self._finalizer.detach()
+                h, self._h = self._h, 0
+                _check(_lib().veclite_close(h), "close")
+
+    def _pending(self) -> int:
+        out = np.zeros(1, dtype=np.int64)
+        _check(_lib().veclite_pending(self._handle(), _ptr(out)), "pending")
+        return int(out[0])
+
+    def _rollback_to(self, mark: int) -> None:
+        _check(_lib().veclite_rollback(self._handle(), mark), "rollback")
+
+    @property
+    def pending(self) -> int:
+        with self._lock:
+            return self._pending()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._rollback_to(0)
+
+    def add(self, vectors, tags: Optional[Sequence[int]] = None, commit: bool = True) -> np.ndarray:
         v = np.ascontiguousarray(vectors, dtype=np.float32)
         if v.ndim == 1:
             v = v[None, :]
@@ -122,62 +167,97 @@ class Database:
             raise ValueError(f"vectors must have shape (n, {self.dim})")
         t = np.zeros(len(v), dtype=np.int64) if tags is None else np.asarray(tags, dtype=np.int64).reshape(-1)
         if len(t) != len(v):
-            raise ValueError("need one tag per vector")
-        h, out, ids = self._handle(), np.zeros(1, dtype=np.int64), np.empty(len(v), dtype=np.int64)
+            raise ValueError(f"need one tag per vector: {len(t)} tags for {len(v)} vectors")
+        bad = np.flatnonzero(~np.isfinite(v).all(axis=1))
+        if bad.size:
+            raise VecliteError(-12, "add", int(bad[0]))
+        if self.storage == "f16":
+            big = np.flatnonzero((np.abs(v) > F16_MAX).any(axis=1))
+            if big.size:
+                raise VecliteError(-16, "add", int(big[0]))
+        ids = np.empty(len(v), dtype=np.int64)
+        out = np.zeros(1, dtype=np.int64)
         stride = self.dim * 4
-        for i in range(len(v)):
-            _check(_lib().veclite_append(h, v.ctypes.data + i * stride, int(t[i]), _ptr(out)), "add")
-            ids[i] = out[0]
-        if commit:
-            self.commit()
+        with self._lock:
+            h = self._handle()
+            mark = self._pending()
+            try:
+                for i in range(len(v)):
+                    _check(_lib().veclite_append(h, v.ctypes.data + i * stride, int(t[i]), _ptr(out)), "add", i)
+                    ids[i] = out[0]
+                if commit:
+                    self.commit()
+            except BaseException:
+                self._rollback_to(mark)
+                raise
         return ids
 
-    def delete(self, row_id, commit=True):
-        _check(_lib().veclite_delete(self._handle(), int(row_id)), "delete")
-        if commit:
-            self.commit()
+    def delete(self, row_ids: Union[int, Sequence[int]], commit: bool = True) -> None:
+        ids = np.atleast_1d(np.asarray(row_ids, dtype=np.int64))
+        with self._lock:
+            h = self._handle()
+            mark = self._pending()
+            try:
+                for i, rid in enumerate(ids):
+                    _check(_lib().veclite_delete(h, int(rid)), "delete", i)
+                if commit:
+                    self.commit()
+            except BaseException:
+                self._rollback_to(mark)
+                raise
 
-    def commit(self):
-        _check(_lib().veclite_commit(self._handle(), None), "commit")
+    def commit(self) -> None:
+        with self._lock:
+            _check(_lib().veclite_commit(self._handle(), None), "commit")
 
-    def checkpoint(self):
-        _check(_lib().veclite_checkpoint(self._handle(), None), "checkpoint")
+    def checkpoint(self) -> None:
+        with self._lock:
+            _check(_lib().veclite_checkpoint(self._handle(), None), "checkpoint")
 
-    def info(self):
-        out = np.zeros(11, dtype=np.int64)
-        _check(_lib().veclite_info(self._handle(), _ptr(out)), "info")
-        keys = ["rows", "txn", "published", "checkpointed_txn", "wal_frames", "salt", "main_rows", "poisoned", "storage", "dim", "gpu_rows"]
-        return dict(zip(keys, out.tolist()))
+    def info(self) -> dict:
+        out = np.zeros(len(_INFO), dtype=np.int64)
+        with self._lock:
+            _check(_lib().veclite_info(self._handle(), _ptr(out)), "info")
+        return dict(zip(_INFO, out.tolist()))
 
-    def search(self, queries, k=10, tag=None, metric="cosine", device=None):
-        dev = DEVICES[_device(device or self.device)]
-        if metric not in METRICS:
-            raise ValueError(f"metric must be one of {sorted(METRICS)}")
+    def search(self, queries, k: int = 10, tag: Union[Tag, Sequence[Tag]] = None, metric: str = "cosine",
+               device: Optional[str] = None):
+        dev = DEVICES[_choice(device or self.device, DEVICES, "device")]
+        _choice(metric, METRICS, "metric")
+        if isinstance(k, bool) or not isinstance(k, (int, np.integer)) or not 1 <= k <= MAX_K:
+            raise ValueError(f"k must be an integer in [1, {MAX_K}]")
         q = np.ascontiguousarray(queries, dtype=np.float32)
         single = q.ndim == 1
         q = q[None, :] if single else q
         if q.ndim != 2 or q.shape[1] != self.dim:
             raise ValueError(f"queries must have shape (nq, {self.dim})")
         nq = len(q)
+        if not 1 <= nq <= MAX_BATCH:
+            raise ValueError(f"batch size must be in [1, {MAX_BATCH}]")
         fo = ft = None
         if tag is not None:
-            tags = np.broadcast_to(np.asarray(tag, dtype=object), (nq,))
+            tags = list(tag) if isinstance(tag, (list, tuple, np.ndarray)) else [tag] * nq
+            if len(tags) != nq:
+                raise ValueError(f"need one tag per query: {len(tags)} tags for {nq} queries")
             fo = np.array([t is not None for t in tags], dtype=np.uint8)
             ft = np.array([0 if t is None else int(t) for t in tags], dtype=np.int64)
-        ids = np.empty((nq, k), dtype=np.int64)
-        sc = np.empty((nq, k), dtype=np.float32)
+        ids = np.empty((nq, int(k)), dtype=np.int64)
+        sc = np.empty((nq, int(k)), dtype=np.float32)
         cnt = np.zeros(nq, dtype=np.int64)
-        h, r, used = self._handle(), np.zeros(1, dtype=np.int64), np.zeros(1, dtype=np.int32)
-        _check(_lib().veclite_reader_begin(h, _ptr(r)), "search")
-        try:
-            _check(_lib().veclite_reader_search_dev(h, int(r[0]), _ptr(q), nq, _ptr(fo), _ptr(ft), k, METRICS[metric], 16,
-                                                    dev, self.gpu_min_batch, _ptr(ids), _ptr(sc), _ptr(cnt), _ptr(used)), "search")
-        finally:
-            _lib().veclite_reader_end(h, int(r[0]))
-        self.last_device = "gpu" if used[0] else "cpu"
+        r, used = np.zeros(1, dtype=np.int64), np.zeros(1, dtype=np.int32)
+        with self._lock:
+            h = self._handle()
+            _check(_lib().veclite_reader_begin(h, _ptr(r)), "search")
+            try:
+                _check(_lib().veclite_reader_search_dev(h, int(r[0]), _ptr(q), nq, _ptr(fo), _ptr(ft), int(k), METRICS[metric], 16,
+                                                        dev, self.gpu_min_batch, _ptr(ids), _ptr(sc), _ptr(cnt), _ptr(used)), "search")
+            finally:
+                _lib().veclite_reader_end(h, int(r[0]))
+            self.last_device = "gpu" if used[0] else "cpu"
         hits = [(ids[i, : cnt[i]].copy(), sc[i, : cnt[i]].copy()) for i in range(nq)]
         return hits[0] if single else hits
 
 
-def open(path, dim=0, storage=None, device="auto", gpu_min_batch=64):
+def open(path: Union[str, os.PathLike], dim: int = 0, storage: Optional[str] = None, device: str = "auto",
+         gpu_min_batch: int = 64) -> Database:
     return Database(path, dim, storage, device=device, gpu_min_batch=gpu_min_batch)

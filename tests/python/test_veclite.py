@@ -116,7 +116,7 @@ def test_errors(path):
         with pytest.raises(veclite.VecliteError) as e:
             db.search(np.zeros(4), metric="cosine")
         assert e.value.code == -9
-        with pytest.raises(veclite.VecliteError):
+        with pytest.raises(ValueError):
             db.search(np.ones(4), k=0)
         with pytest.raises(ValueError):
             db.search(np.ones(4), metric="hamming")

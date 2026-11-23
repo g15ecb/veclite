@@ -23,10 +23,12 @@ The scan is bound by memory bandwidth, so float16 storage halves both the file a
 
 ## Use it from Python (Linux)
 
+Build the library once (this produces `build/libveclite.so`):
+
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install mojo==1.2.0 max==26.7.0 numpy
-scripts/build.sh                 # -> build/libveclite.so
+scripts/build.sh
 export PYTHONPATH=$PWD/python
 ```
 
@@ -35,13 +37,17 @@ import numpy as np
 import veclite
 
 with veclite.open("docs.db", dim=1536, storage="f16") as db:
-    ids = db.add(embeddings, tags=tenant_ids)        # durable on return
+    ids = db.add(embeddings, tags=tenant_ids)
     db.delete(ids[0])
 
 with veclite.open("docs.db") as db:
-    hits, distances = db.search(query, k=10, tag=42)  # exact top-10 for tenant 42
-    batch = db.search(queries, k=10)                  # one call, many queries
+    hits, distances = db.search(query, k=10, tag=42)
+    batch = db.search(queries, k=10)
 ```
+
+- `add` and `delete` are durable when they return, and all-or-nothing: if any row is bad, nothing from that call is written, and `VecliteError.row` says which row.
+- `search(query, k=10, tag=42)` returns the exact top 10 among rows tagged 42. Passing a 2-D array of queries returns one result per query from a single call.
+- A `Database` is safe to share between threads.
 
 [`examples/quickstart.py`](examples/quickstart.py) is a runnable version, executed by the test suite. `libveclite.so` links to the Mojo runtime in the environment it was built in, so load it from that same environment.
 
