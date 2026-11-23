@@ -57,3 +57,7 @@ with veclite.open("docs.db") as db:
 
 - [docs/DESIGN.md](docs/DESIGN.md): file format, WAL and recovery, formal property tables, GPU, float16/int8 findings, full benchmarks.
 - `include/veclite.h`, `include/veclite_store.h`: the C API.
+
+## Licence
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
