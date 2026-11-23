@@ -248,6 +248,43 @@ theorem batch_correct {β γ : Type} (k : Nat) (f : β → γ → α) (p : β �
   rw [e]
   exact topk_correct k (p q) _ _ (h.map _)
 
+
+theorem isort_cons_min [DecidableEq α] (L : List α) (m : α) (hm : m ∈ L) (hmin : ∀ x ∈ L, le m x) :
+    isort L = m :: isort (L.erase m) := by
+  apply eq_of_perm_sorted _ _ (isort_sorted L)
+  · simp only [Sorted, List.pairwise_cons]
+    exact ⟨fun x hx => hmin x (List.erase_subset ((isort_perm _).subset hx)), isort_sorted _⟩
+  · exact (isort_perm L).trans ((List.perm_cons_erase hm).trans ((isort_perm _).symm.cons m))
+
+theorem selectMin_spec [DecidableEq α] (k : Nat) : ∀ (L : List α) (pick : List α → Option α),
+    (∀ M, pick M = none ↔ M = []) →
+    (∀ M m, pick M = some m → m ∈ M ∧ ∀ x ∈ M, le m x) →
+    ∀ sel : List α → Nat → List α,
+      (∀ M, sel M 0 = []) →
+      (∀ M j, sel M (j + 1) = match pick M with | none => [] | some m => m :: sel (M.erase m) j) →
+      sel L k = (isort L).take k := by
+  induction k with
+  | zero => intro L pick _ _ sel h0 _; simp [h0]
+  | succ k ih =>
+    intro L pick hnone hsome sel h0 hs
+    rw [hs]
+    cases hp : pick L with
+    | none =>
+      have : L = [] := (hnone L).mp hp
+      subst this; simp [isort]
+    | some m =>
+      obtain ⟨hm, hmin⟩ := hsome L m hp
+      simp only
+      rw [isort_cons_min L m hm hmin, List.take_succ_cons, ih (L.erase m) pick hnone hsome sel h0 hs]
+
+theorem gpu_chunks_correct (k : Nat) (p : α → Bool) (cs ord : List (List α)) (h : ord.Perm cs)
+    (local_ : List α → List α) (hloc : ∀ c ∈ ord, local_ c = (isort (c.filter p)).take k) :
+    mergeLocals k (ord.map local_) = (isort (cs.flatten.filter p)).take k := by
+  have e : ord.map local_ = ord.map (scanChunk k p) :=
+    List.map_congr_left (fun c hc => by rw [hloc c hc, scanChunk, bfold_nil])
+  rw [e]
+  exact topk_correct k p cs ord h
+
 structure Cand where
   score : Int
   id : Nat
@@ -282,3 +319,5 @@ end TopK
 #print axioms TopK.topk_correct
 #print axioms TopK.topk_unique
 #print axioms TopK.batch_correct
+#print axioms TopK.selectMin_spec
+#print axioms TopK.gpu_chunks_correct

@@ -160,6 +160,36 @@ def ssd(rows):
     save(fig, "ssd_f16_vs_f32.png")
 
 
+def gpu(rows):
+    dims = sorted({r["dim"] for r in rows})
+    fig, axes = plt.subplots(2, len(dims), figsize=(5 * len(dims), 8.4), sharey="row")
+    for col, dim in enumerate(dims):
+        for row_i, sel in enumerate((1.0, 0.1)):
+            ax = axes[row_i][col]
+            for storage, ls in (("f32", "-"), ("f16", "--")):
+                sub = sorted((r for r in rows if r["dim"] == dim and r["storage"] == storage and r["selectivity"] == sel), key=lambda r: r["batch"])
+                b = [r["batch"] for r in sub]
+                ax.plot(b, [r["gpu_ms_per_q"] for r in sub], ls, marker="o", color="C3", label=f"GPU {storage}")
+                ax.plot(b, [r["cpu_ms_per_q"] for r in sub], ls, marker="s", color="C0", label=f"Mojo CPU {storage}")
+                if storage == "f32" and sel == 1.0:
+                    ax.plot(b, [r["faiss_ms_per_q"] for r in sub], ":", marker="^", color="C2", label="FAISS (Accelerate)")
+            ax.set(xscale="log", yscale="log", xlabel="queries per batch", title=f"dim {dim}, {sel:.0%} of rows match")
+            ax.grid(True, which="both", alpha=0.3)
+        axes[0][col].legend(fontsize=7)
+    axes[0][0].set_ylabel("ms per query")
+    axes[1][0].set_ylabel("ms per query")
+    save(fig, "gpu_vs_cpu.png")
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    for dim, color in zip(dims, ("C0", "C1", "C2")):
+        sub = sorted((r for r in rows if r["dim"] == dim and r["storage"] == "f32" and r["selectivity"] == 1.0), key=lambda r: r["batch"])
+        ax.plot([r["batch"] for r in sub], [r["cpu_ms_per_q"] / r["gpu_ms_per_q"] for r in sub], "-o", color=color, label=f"dim {dim}")
+    ax.axhline(1, color="k", ls=":")
+    ax.set(xscale="log", xlabel="queries per batch", ylabel="GPU speed-up over Mojo CPU (f32, no filter)", title="Where the GPU wins (>1)")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend()
+    save(fig, "gpu_speedup.png")
+
+
 def formal(res):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     s = res["wal_samples"]
@@ -190,6 +220,8 @@ def main():
         dtypes(r)
     if (r := load("ssd_bench.json")) is not None:
         ssd(r)
+    if (r := load("gpu_sweep.json")) is not None:
+        gpu(r)
     if (r := load("formal_bench.json")) is not None:
         formal(r)
 

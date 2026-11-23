@@ -1,0 +1,60 @@
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 1.0, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 4.2675420409068465, 'cpu_ms_per_q': 2.6445420226082206, 'faiss_ms_per_q': 3.577750059776008}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 1.0, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.8146509935613722, 'cpu_ms_per_q': 0.47888550034258515, 'faiss_ms_per_q': 0.9803801222005859}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 1.0, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.47898306365823373, 'cpu_ms_per_q': 0.3371601560502313, 'faiss_ms_per_q': 1.7784049377951305}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 1.0, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.24147330441337544, 'cpu_ms_per_q': 0.31962597677193116, 'faiss_ms_per_q': 1.9252871088610846}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 1.0, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.23231339446283528, 'cpu_ms_per_q': 0.49209432017960353, 'faiss_ms_per_q': 0.13109228507346415}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 0.1, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 8.609374985098839, 'cpu_ms_per_q': 0.7149589946493506}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 0.1, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.9961667528841645, 'cpu_ms_per_q': 0.09675524779595435}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 0.1, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.4596484359353781, 'cpu_ms_per_q': 0.07380987517535686}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 0.1, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.25603678113839123, 'cpu_ms_per_q': 0.06589811710000504}
+{'n': 100000, 'dim': 768, 'storage': 'f32', 'selectivity': 0.1, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.2371453438172466, 'cpu_ms_per_q': 0.0541970216545451}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 1.0, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 2.9088329756632447, 'cpu_ms_per_q': 1.4417499769479036}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 1.0, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7283228769665584, 'cpu_ms_per_q': 0.4588437586789951}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 1.0, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.42053256038343534, 'cpu_ms_per_q': 0.3978229397034738}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 1.0, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.2345651009818539, 'cpu_ms_per_q': 0.39439193005819106}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 1.0, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.22555924397238414, 'cpu_ms_per_q': 0.47323168928414816}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 0.1, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 3.9875840302556753, 'cpu_ms_per_q': 0.36883389111608267}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 0.1, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.8325363742187619, 'cpu_ms_per_q': 0.10472399299032986}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 0.1, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.4479622184589971, 'cpu_ms_per_q': 0.0732578155293595}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 0.1, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.24446549286949448, 'cpu_ms_per_q': 0.06480338288383791}
+{'n': 100000, 'dim': 768, 'storage': 'f16', 'selectivity': 0.1, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.24415917982878454, 'cpu_ms_per_q': 0.04851888093071466}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 1.0, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 7.005832972936332, 'cpu_ms_per_q': 5.824750056490302, 'faiss_ms_per_q': 7.362457923591137}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 1.0, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 1.29563023801893, 'cpu_ms_per_q': 1.15485412243288, 'faiss_ms_per_q': 2.458140632370487}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 1.0, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7460286542482208, 'cpu_ms_per_q': 0.6660104045295157, 'faiss_ms_per_q': 3.8128060004964937}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 1.0, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.4084781949131866, 'cpu_ms_per_q': 0.7754430389468325, 'faiss_ms_per_q': 0.4102952498215018}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 1.0, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.41606640616009827, 'cpu_ms_per_q': 0.9239737948973925, 'faiss_ms_per_q': 0.24643497863507946}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 0.1, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 10.387749993242323, 'cpu_ms_per_q': 2.619417035020888}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 0.1, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 1.3912968861404806, 'cpu_ms_per_q': 0.1992135075852275}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 0.1, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7884062506491318, 'cpu_ms_per_q': 0.1389296885463409}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 0.1, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.433308914580266, 'cpu_ms_per_q': 0.1179801402031444}
+{'n': 100000, 'dim': 1536, 'storage': 'f32', 'selectivity': 0.1, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.41967431639022834, 'cpu_ms_per_q': 0.10695003334149078}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 1.0, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 5.512667004950345, 'cpu_ms_per_q': 2.9654160607606173}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 1.0, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 1.2267708807485178, 'cpu_ms_per_q': 0.866531248902902}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 1.0, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7257916549860965, 'cpu_ms_per_q': 0.7101965929905418}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 1.0, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.40096158591040876, 'cpu_ms_per_q': 0.757413734390866}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 1.0, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.3919939783827431, 'cpu_ms_per_q': 1.013224203234131}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 0.1, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 6.335625075735152, 'cpu_ms_per_q': 0.834417063742876}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 0.1, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 1.3089218700770289, 'cpu_ms_per_q': 0.1744740002322942}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 0.1, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7572226568299811, 'cpu_ms_per_q': 0.14450781236519106}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 0.1, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.4097122346138349, 'cpu_ms_per_q': 0.11621777321124682}
+{'n': 100000, 'dim': 1536, 'storage': 'f16', 'selectivity': 0.1, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.3988291834957636, 'cpu_ms_per_q': 0.10551782224865747}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 1.0, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 12.216457980684936, 'cpu_ms_per_q': 10.988791938871145, 'faiss_ms_per_q': 15.61208302155137}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 1.0, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 2.327791618881747, 'cpu_ms_per_q': 2.0036927453475073, 'faiss_ms_per_q': 5.574765615165234}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 1.0, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 1.3952174376754556, 'cpu_ms_per_q': 1.2659765634452924, 'faiss_ms_per_q': 8.788865907263244}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 1.0, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7633440782228718, 'cpu_ms_per_q': 1.9447584681984154, 'faiss_ms_per_q': 0.9578388671798166}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 1.0, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7757455255159584, 'cpu_ms_per_q': 2.3276389160855615, 'faiss_ms_per_q': 0.48088378912325425}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 0.1, 'batch': 1, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 13.75883398577571, 'cpu_ms_per_q': 2.107250038534403}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 0.1, 'batch': 8, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 2.5057864986592904, 'cpu_ms_per_q': 0.45599999430123717}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 0.1, 'batch': 32, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 1.4703567467222456, 'cpu_ms_per_q': 0.32459765498060733}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 0.1, 'batch': 128, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7902233128334046, 'cpu_ms_per_q': 0.2888759763663984}
+{'n': 100000, 'dim': 3072, 'storage': 'f32', 'selectivity': 0.1, 'batch': 512, 'gpu_cpu_agreement': 1.0, 'gpu_ms_per_q': 0.7670676270663535, 'cpu_ms_per_q': 0.27776822844316484}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 1.0, 'batch': 1, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 7.08408304490149, 'cpu_ms_per_q': 7.342665921896696}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 1.0, 'batch': 8, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 2.1552238758886233, 'cpu_ms_per_q': 1.550692759337835}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 1.0, 'batch': 32, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 1.3373932197282556, 'cpu_ms_per_q': 1.448962251743069}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 1.0, 'batch': 128, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 0.7402324217764544, 'cpu_ms_per_q': 1.7105527340390836}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 1.0, 'batch': 512, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 0.7348550605001947, 'cpu_ms_per_q': 2.4058500976025243}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 0.1, 'batch': 1, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 8.469292079098523, 'cpu_ms_per_q': 1.750041963532567}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 0.1, 'batch': 8, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 2.3224582546390593, 'cpu_ms_per_q': 0.3593073779484257}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 0.1, 'batch': 32, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 1.4133528748061508, 'cpu_ms_per_q': 0.28071746783098206}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 0.1, 'batch': 128, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 0.7777705077387509, 'cpu_ms_per_q': 0.26427864850120386}
+{'n': 100000, 'dim': 3072, 'storage': 'f16', 'selectivity': 0.1, 'batch': 512, 'gpu_cpu_agreement': 0.9984375, 'gpu_ms_per_q': 0.7399471035114402, 'cpu_ms_per_q': 0.2192998047121364}

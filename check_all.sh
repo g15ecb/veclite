@@ -21,7 +21,9 @@ echo "== lean mutants must fail"
 mkdir -p build/leanmut
 sed 's/(ins x acc).take k$/(ins x acc).take (k - 1)/' formal/lean/TopK.lean > build/leanmut/TopKMutant.lean
 sed 's/{ r with live := false }/{ r with live := !r.live }/' formal/lean/Wal.lean > build/leanmut/WalToggle.lean
-for m in TopKMutant WalToggle; do
+sed 's/(∀ M m, pick M = some m → m ∈ M ∧ ∀ x ∈ M, le m x) →/(∀ M m, pick M = some m → m ∈ M ∧ ∀ x ∈ M, le x m) →/' formal/lean/TopK.lean > build/leanmut/SelectMax.lean
+grep -q "le x m) →" build/leanmut/SelectMax.lean
+for m in TopKMutant WalToggle SelectMax; do
   if lean "build/leanmut/$m.lean" >/dev/null 2>&1; then echo "lean mutant $m unexpectedly proved"; exit 1; fi
   echo "lean mutant $m rejected"
 done
@@ -36,6 +38,8 @@ cc tests/dtype_test.c build build/dtype_test -fsanitize=address,undefined
 ./build/dtype_test 1000
 cc tests/store_test.c build build/store_test -fsanitize=address,undefined
 for dt in 0 1; do ./build/store_test "$SEEDS" 200 1 "$dt"; done
+cc tests/gpu_test.c build build/gpu_test
+./build/gpu_test 300
 
 echo "== kernel mutants must fail"
 for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE QUERY_MIX; do
@@ -43,6 +47,14 @@ for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE QUERY_MIX; do
   cc tests/c_host.c "build/mut_$m" "build/mut_$m/c_host"
   if "./build/mut_$m/c_host" >/dev/null 2>&1; then echo "mutant $m survived"; exit 1; fi
   echo "mutant $m caught: $("./build/mut_$m/c_host" 2>/dev/null | tail -1)"
+done
+
+echo "== gpu mutants must fail"
+for m in NO_TIE_BREAK LOCAL_K_MINUS_ONE POST_FILTER; do
+  ./build.sh "build/gmut_$m" -D "VDB_MUTANT_$m=true"
+  cc tests/gpu_test.c "build/gmut_$m" "build/gmut_$m/gpu_test"
+  if "./build/gmut_$m/gpu_test" 150 >/dev/null 2>&1; then echo "gpu mutant $m survived"; exit 1; fi
+  echo "gpu mutant $m caught: $("./build/gmut_$m/gpu_test" 150 2>/dev/null | tail -1)"
 done
 
 echo "== storage mutants must fail"

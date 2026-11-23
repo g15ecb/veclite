@@ -125,6 +125,62 @@ Sources: the OpenAI, Gemini, Cohere and Voyage docs, and the Qwen3-Embedding-8B 
 - Removed from `main`. The code, proof (`int8_search_exact`), tests and benchmarks are at tag [`int8-exact-experiment`](https://github.com/g15ecb/vecdb-spike/tree/int8-exact-experiment).
 - Approximate int8 (rescore the top few multiples of k) would be fast but breaks the exact-search decision, so it wasn't pursued.
 
+## GPU (Apple M2 Pro, Metal via Mojo)
+
+### What it is
+
+`src/gpu.mojo`, C API `vdb_gpu_open/update/search/close`:
+- **Resident collection.** Vectors (float32 or float16), row norms, tags and live flags are copied to the GPU once. `vdb_gpu_update` refreshes tags and live flags after deletes.
+- **Scoring:**
+  - 1 query: a matrix-vector kernel where 32 threads read each row with 16-byte loads.
+  - 2–16 queries: a 128-row × 16-query tile.
+  - 17+ queries: a 128 × 64 tile with 8 × 4 results per thread.
+  - All use precomputed load addresses and 32-bit index arithmetic.
+- **Selection:** each chunk of 2,048 rows is handled by 32 threads holding 64 scores each in registers. The chunk's top-k is picked by repeatedly taking the next smallest (score, id), using shuffle reductions and no barriers. Filters are applied before selection.
+- **Merge:** chunks are merged on the CPU with the proven `bstep` merge. Non-finite scores return `E_SCORE_NONFINITE`.
+
+### Lean (`formal/lean/TopK.lean`)
+
+| Theorem | States | Why |
+|---|---|---|
+| `isort_cons_min` | If m is in L and ≤ every element, `isort L = m :: isort (L.erase m)` | The step that makes "take the minimum" equal sorting. |
+| `selectMin_spec` | Any selector that repeatedly picks a minimum of the remaining elements and removes it returns exactly `(isort L).take k` | Justifies the GPU's k-pass selection. With unique ids, "strictly after the last pick in (score, id) order" equals "remove the picked elements". |
+| `gpu_chunks_correct` | If every chunk returns `(isort (chunk.filter p)).take k`, the CPU merge in any order equals the global top-k | Plugs the GPU chunks into `topk_correct`. |
+| Mutant: the selector picks a maximum | Must fail to prove | The proof depends on the minimum property. |
+
+No Quint model is needed: the kernels are deterministic per chunk, and the merge is already proved.
+
+### Tests (`tests/gpu_test.c`)
+
+- **Inputs:** integer-valued data, so float32 scores are exact and comparisons can be bit-for-bit.
+- **Scores:** for L2 and dot product, every GPU score equals the CPU score, and GPU results equal CPU results.
+- **Top-k:** for every metric, GPU top-k equals the specification (sort the GPU's scores by (score, id), filter, take k).
+- **Coverage:** 1 to 13,000 rows (several chunks), ties, per-query filters, deletes via `vdb_gpu_update`, and float16.
+- **Error paths:** NaN rows, and every invalid argument.
+- **Totals:** 6.8M checks with no failures. All 3 GPU mutants are caught (no tie-break: 11,700 failures; k−1 per chunk: 2,038; filter after selection: 8,422).
+
+### Results (100k rows, cosine, normalised embeddings, k = 10; ms per query)
+
+![gpu](results/graphs/gpu_vs_cpu.png)
+![speedup](results/graphs/gpu_speedup.png)
+
+| dim | batch | GPU | Mojo CPU | FAISS (Accelerate) |
+|---|---|---|---|---|
+| 768 | 1 / 32 / 128 / 512 | 4.27 / 0.48 / 0.24 / 0.23 | 2.65 / 0.34 / 0.32 / 0.49 | 3.58 / 1.78 / 1.93 / 0.13 |
+| 1536 | 1 / 32 / 128 / 512 | 7.01 / 0.75 / 0.41 / 0.42 | 5.83 / 0.67 / 0.78 / 0.92 | 7.36 / 3.81 / 0.41 / 0.25 |
+| 3072 | 1 / 32 / 128 / 512 | 12.2 / 1.40 / 0.76 / 0.78 | 11.0 / 1.27 / 1.95 / 2.33 | 15.6 / 8.79 / 0.96 / 0.48 |
+
+- **The GPU wins only on unfiltered batches of 128 or more:** 1.3–3x faster than the Mojo CPU, and the gap grows with dimension.
+  - Below 128 it is 0.6–0.9x, because fixed per-call overhead and memory bandwidth dominate. The GPU shares the CPU's memory, so one query can't be faster.
+- **FAISS (BLAS on the AMX unit) is still fastest at batch 512:** 0.48 vs 0.78 ms at dim 3072.
+  - My scoring kernel reaches 0.88 TFLOP/s against a GPU peak of about 6.8 TFLOP/s (figure from memory).
+  - Closing that gap needs Apple's simdgroup 8×8 matrix instructions, which I haven't tried.
+- **Filtered searches are slower on the GPU at every batch size.** The GPU scores every row and filters at selection; the CPU skips non-matching rows. A GPU gather of matching rows would fix this.
+- **float16 on the GPU:** no gain for batches, because they're compute-bound.
+- **Agreement with the CPU:** top-10 identical everywhere except float16 at 3072 (0.998), where different summation order reorders near-ties.
+- **Profile at batch 512, dim 1536:** scoring 179 ms, selection 22 ms, merge 8 ms, copies about 2 ms.
+- **Recommendation:** use the GPU only for large unfiltered batches (≥ 128 queries). Everything else stays on the CPU. For the batch path, the next step is simdgroup-matrix scoring, which should beat FAISS.
+
 ## Formal properties
 
 ### Quint: search, `formal/topk.qnt`
@@ -279,7 +335,7 @@ All graphs are in `results/graphs/`. Raw data is in `results/*.json`.
 |---|---|---|
 | S1 | Mojo C-ABI library with full validation | **VALIDATED** |
 | S2a | Batched CPU exact search, competitive | **VALIDATED** (AMX through BLAS wins large unfiltered batches) |
-| S2b | Apple GPU through Mojo | **BLOCKED**: needs full Xcode |
+| S2b | Apple GPU through Mojo | **PARTIAL**: exact (proved selection, bit-exact tests); 1.3–3x faster than the CPU for unfiltered batches of 128+; slower for small or filtered batches; FAISS/AMX still faster at 512 |
 | S3 | Filtered batched top-k, formally verified | **VALIDATED** |
 | S4 | File format + WAL: crash-safe, snapshot readers, formally modelled | **VALIDATED** within the limits below |
 | S5a | float16 storage | **VALIDATED**: half the size, 2x faster from SSD at every batch size, 1.4–1.9x faster single-query in RAM, slower for in-RAM batches; recall 0.999+ |
