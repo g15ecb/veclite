@@ -81,7 +81,7 @@ def store(res):
 
 def dtypes(rows):
     dims = sorted({r["dim"] for r in rows})
-    style = {"f32": ("C0", "o"), "f16": ("C1", "s"), "i8": ("C2", "^")}
+    style = {"f32": ("C0", "o"), "f16": ("C1", "s")}
     fig, axes = plt.subplots(1, len(dims), figsize=(5 * len(dims), 4.2), sharey=True)
     for ax, dim in zip(axes, dims):
         for storage, (color, marker) in style.items():
@@ -102,28 +102,21 @@ def dtypes(rows):
         axes[0].plot(x, [base[r["dim"]] / r["ms_per_q"] for r in sub], "-" + marker, color=color, label=storage)
         axes[1].plot(x, [r["scan_mb"] for r in sub], "-" + marker, color=color, label=storage)
         axes[2].plot(x, [r["recall_vs_f32"] for r in sub], "-" + marker, color=color, label=f"{storage} recall@10")
-    i8 = [r for r in rows if r["storage"] == "i8" and r["selectivity"] == 1.0]
-    dims_i8 = sorted({r["dim"] for r in i8})
-    rate = [100 * sum(r["fallbacks"] for r in i8 if r["dim"] == d) / sum(r["batch"] for r in i8 if r["dim"] == d) for d in dims_i8]
-    ax2 = axes[2].twinx()
-    ax2.bar(dims_i8, rate, width=200, alpha=0.25, color="C2", label="i8 queries needing f32 fallback (%)")
-    ax2.set(ylabel="i8 fallback to full f32 scan (% of queries)", ylim=(0, 105))
     axes[0].set(xlabel="dim", ylabel="speed-up vs f32 (batch 1)", title="Single-query speed-up")
-    axes[1].set(xlabel="dim", ylabel="MB scanned per query (stage 1)", yscale="log", title="Bytes scanned before rescoring/fallback")
-    axes[2].set(xlabel="dim", ylabel="recall@10 vs f32 exact", ylim=(0.9, 1.005), title="Accuracy (i8 is exact by construction)")
+    axes[1].set(xlabel="dim", ylabel="MB scanned per query", yscale="log", title="Bytes scanned per query")
+    axes[2].set(xlabel="dim", ylabel="recall@10 vs f32 exact", ylim=(0.99, 1.0005), title="f16 accuracy vs f32")
     for ax in axes:
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8, loc="lower left")
-    ax2.legend(fontsize=8, loc="lower right")
     save(fig, "dtype_tradeoffs.png")
 
 
 def store_dtypes(rows):
     names = [r["storage"] for r in rows]
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
-    axes[0].bar(names, [r["main_file_mb"] for r in rows], color=["C0", "C1", "C2"])
+    axes[0].bar(names, [r["main_file_mb"] for r in rows], color=["C0", "C1"])
     axes[0].set(ylabel="MB", title=f"Main file size (n={rows[0]['n']:,}, dim={rows[0]['dim']})")
-    axes[1].bar(names, [r["ingest_rows_per_s"] for r in rows], color=["C0", "C1", "C2"])
+    axes[1].bar(names, [r["ingest_rows_per_s"] for r in rows], color=["C0", "C1"])
     axes[1].set(ylabel="rows / s", title="Durable ingest (1024 rows per commit)")
     w = 0.38
     xs = range(len(rows))
@@ -135,6 +128,36 @@ def store_dtypes(rows):
     for ax in axes:
         ax.grid(True, axis="y", alpha=0.3)
     save(fig, "store_dtypes.png")
+
+
+def ssd(rows):
+    dims = sorted({r["dim"] for r in rows})
+    fig, axes = plt.subplots(1, len(dims) + 1, figsize=(5 * (len(dims) + 1), 4.2))
+    style = {"f32": "C0", "f16": "C1"}
+    for ax, dim in zip(axes, dims):
+        for storage, color in style.items():
+            sub = sorted((r for r in rows if r["dim"] == dim and r["storage"] == storage), key=lambda r: r["batch"])
+            b = [r["batch"] for r in sub]
+            ax.plot(b, [r["cold_ms_per_q"] for r in sub], "-o", color=color, label=f"{storage}, from SSD (cache bypassed)")
+            ax.plot(b, [r["warm_ms_per_q"] for r in sub], "--s", color=color, alpha=0.7, label=f"{storage}, in RAM")
+        ax.set(xscale="log", yscale="log", xlabel="queries per batch", ylabel="ms per query",
+               title=f"dim {dim}: {sub[0]['n']:,} rows, f32 file {sub[0]['file_gb'] * (1 if sub[0]['storage'] == 'f32' else 2):.1f} GB")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=8)
+    ax = axes[-1]
+    labels, ratios = [], []
+    for dim in dims:
+        for bsz in sorted({r["batch"] for r in rows}):
+            f32 = next(r for r in rows if r["dim"] == dim and r["storage"] == "f32" and r["batch"] == bsz)
+            f16 = next(r for r in rows if r["dim"] == dim and r["storage"] == "f16" and r["batch"] == bsz)
+            labels.append(f"d{dim}\nb{bsz}")
+            ratios.append(f32["cold_ms_per_q"] / f16["cold_ms_per_q"])
+    ax.bar(labels, ratios, color="C1")
+    ax.axhline(2, color="k", ls=":", label="2x = halved bytes")
+    ax.set(ylabel="f16 speed-up over f32 from SSD", title="Out-of-RAM speed-up (higher is better)")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    save(fig, "ssd_f16_vs_f32.png")
 
 
 def formal(res):
@@ -165,6 +188,8 @@ def main():
             store_dtypes(r["store_dtype"])
     if (r := load("dtype_sweep.json")) is not None:
         dtypes(r)
+    if (r := load("ssd_bench.json")) is not None:
+        ssd(r)
     if (r := load("formal_bench.json")) is not None:
         formal(r)
 

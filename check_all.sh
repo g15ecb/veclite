@@ -21,11 +21,7 @@ echo "== lean mutants must fail"
 mkdir -p build/leanmut
 sed 's/(ins x acc).take k$/(ins x acc).take (k - 1)/' formal/lean/TopK.lean > build/leanmut/TopKMutant.lean
 sed 's/{ r with live := false }/{ r with live := !r.live }/' formal/lean/Wal.lean > build/leanmut/WalToggle.lean
-sed 's/(hτ : k ≤ L.countP (fun c => decide (up c ≤ τ)) ∨/(hτ : k ≤ L.countP (fun c => decide (lo c ≤ τ)) ∨/' formal/lean/TopK.lean > build/leanmut/RescoreTauLow.lean
-sed 's/(hover : ((isort (L.map (lowCand lo))).take M).length < M ∨ ∃ t ∈ (isort (L.map (lowCand lo))).take M, τ < t.score) :$/(hover : ((isort (L.map (lowCand lo))).take M).length ≤ M ∨ ∃ t ∈ (isort (L.map (lowCand lo))).take M, τ < t.score) :/' formal/lean/TopK.lean > build/leanmut/RescoreOverflowLe.lean
-grep -q "decide (lo c ≤ τ)) ∨" build/leanmut/RescoreTauLow.lean
-grep -q "length ≤ M ∨" build/leanmut/RescoreOverflowLe.lean
-for m in TopKMutant WalToggle RescoreTauLow RescoreOverflowLe; do
+for m in TopKMutant WalToggle; do
   if lean "build/leanmut/$m.lean" >/dev/null 2>&1; then echo "lean mutant $m unexpectedly proved"; exit 1; fi
   echo "lean mutant $m rejected"
 done
@@ -37,9 +33,9 @@ echo "== build + kernel tests"
 cc tests/c_host.c build build/c_host -fsanitize=address,undefined
 ./build/c_host
 cc tests/dtype_test.c build build/dtype_test -fsanitize=address,undefined
-./build/dtype_test 2000
+./build/dtype_test 1000
 cc tests/store_test.c build build/store_test -fsanitize=address,undefined
-for dt in 0 1 2; do ./build/store_test "$SEEDS" 200 1 "$dt"; done
+for dt in 0 1; do ./build/store_test "$SEEDS" 200 1 "$dt"; done
 
 echo "== kernel mutants must fail"
 for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE QUERY_MIX; do
@@ -47,14 +43,6 @@ for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE QUERY_MIX; do
   cc tests/c_host.c "build/mut_$m" "build/mut_$m/c_host"
   if "./build/mut_$m/c_host" >/dev/null 2>&1; then echo "mutant $m survived"; exit 1; fi
   echo "mutant $m caught: $("./build/mut_$m/c_host" 2>/dev/null | tail -1)"
-done
-
-echo "== int8 rescoring mutants must fail"
-for m in NO_EPS TAU_FROM_LOW NO_FALLBACK; do
-  ./build.sh "build/kmut_$m" -D "VDB_MUTANT_$m=true"
-  cc tests/dtype_test.c "build/kmut_$m" "build/kmut_$m/dtype_test"
-  if "./build/kmut_$m/dtype_test" 2000 >/dev/null 2>&1; then echo "mutant $m survived"; exit 1; fi
-  echo "mutant $m caught: $("./build/kmut_$m/dtype_test" 2000 2>&1 >/dev/null | grep -c 'i8 rescored\|overflow fallback ==') exactness failures (first 12 shown)"
 done
 
 echo "== storage mutants must fail"

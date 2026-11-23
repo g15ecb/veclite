@@ -117,7 +117,7 @@ def bench_dtypes(n=50000, dim=1536, k=10):
     qs = RNG.standard_normal((32, dim), dtype=np.float32)
     ref = Table(vecs, np.arange(n, dtype=np.int64) % 10, np.ones(n, dtype=np.uint8))
     truth = ref.search(qs, k)
-    for storage in ("f32", "f16", "i8"):
+    for storage in ("f32", "f16"):
         path, st = fresh("dtype", dim, storage)
         t0 = time.perf_counter()
         for lo in range(0, n, 1024):

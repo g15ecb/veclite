@@ -219,7 +219,6 @@ struct Db(Movable):
     var a_vec: List[Float32]
     var a_tag: List[Int64]
     var a_enc: List[UInt8]
-    var a_aux: List[Float32]
     var ntx: Int
     var published: Int
     var pub_slot: Int
@@ -246,30 +245,17 @@ struct Db(Movable):
     def enc_bytes(self) -> Int:
         return self.dim * elem_bytes(self.dtype)
 
-    def orig_bytes(self) -> Int:
-        return self.dim * 4 if self.dtype == I8 else 0
-
-    def aux_bytes(self) -> Int:
-        return AUX * 4 if self.dtype == I8 else 0
-
     def set_extent_bytes(mut self):
-        var per_row = self.enc_bytes() + self.orig_bytes() + self.aux_bytes() + 9
-        self.extent_bytes = ((self.extent_rows * per_row + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
+        self.extent_bytes = ((self.extent_rows * (self.enc_bytes() + 9) + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
 
     def vec_off(self, id: Int) -> Int:
         return self.row_off(id) + (id % self.extent_rows) * self.enc_bytes()
 
-    def orig_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * self.enc_bytes() + (id % self.extent_rows) * self.orig_bytes()
-
-    def aux_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + self.orig_bytes()) + (id % self.extent_rows) * self.aux_bytes()
-
     def tag_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + self.orig_bytes() + self.aux_bytes()) + (id % self.extent_rows) * 8
+        return self.row_off(id) + self.extent_rows * self.enc_bytes() + (id % self.extent_rows) * 8
 
     def live_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + self.orig_bytes() + self.aux_bytes() + 8) + (id % self.extent_rows)
+        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + 8) + (id % self.extent_rows)
 
     def format_word(self) -> UInt64:
         return VERSION | (UInt64(Int(self.dtype)) << 16) | (UInt64(self.dim) << 32)
@@ -407,20 +393,16 @@ struct Db(Movable):
         self.a_vec.clear()
         self.a_tag.clear()
         self.a_enc.clear()
-        self.a_aux.clear()
         self.chain_tail = seed_of(self.salt)
         self.pub_slot = 0
 
     def index_frame(mut self, txn: Int, kind: UInt64, id: Int, tag: Int64, vec: Int, chain: UInt64) -> Int32:
         if kind == APPEND:
             var ea = len(self.a_enc)
-            var xa = len(self.a_aux)
             self.a_enc.resize(ea + self.enc_bytes(), 0)
-            self.a_aux.resize(xa + AUX, 0)
-            var st = encode_row(self.dtype, fptr(vec), self.dim, Int(self.a_enc.unsafe_ptr()) + ea, fmut(Int(self.a_aux.unsafe_ptr()) + xa * 4))
+            var st = encode_row(self.dtype, fptr(vec), self.dim, Int(self.a_enc.unsafe_ptr()) + ea)
             if st != OK:
                 self.a_enc.resize(ea, 0)
-                self.a_aux.resize(xa, 0)
                 return st
         self.f_txn.append(txn)
         self.f_kind.append(kind)
@@ -598,15 +580,11 @@ def load_live(mut db: Db) -> Int32:
 
 def same_as_main(db: Db, id: Int, vec: Int) -> Bool:
     var enc = List[UInt8](length=db.enc_bytes(), fill=0)
-    var aux = List[Float32](length=AUX, fill=0)
-    var old = List[UInt8](length=db.enc_bytes() + db.orig_bytes(), fill=0)
+    var old = List[UInt8](length=db.enc_bytes(), fill=0)
     var o = Int(old.unsafe_ptr())
-    var ok = encode_row(db.dtype, fptr(vec), db.dim, Int(enc.unsafe_ptr()), fmut(Int(aux.unsafe_ptr()))) == OK
+    var ok = encode_row(db.dtype, fptr(vec), db.dim, Int(enc.unsafe_ptr())) == OK
     ok = ok and db.rd(MAIN, db.vec_off(id), o, db.enc_bytes()) and same_bytes(o, Int(enc.unsafe_ptr()), db.enc_bytes())
-    if db.dtype == I8:
-        ok = ok and db.rd(MAIN, db.orig_off(id), o, db.orig_bytes()) and same_bytes(o, vec, db.orig_bytes())
     _ = enc^
-    _ = aux^
     _ = old^
     return ok
 
@@ -696,7 +674,7 @@ def vdb_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim: Int
     st64(out_db, 0)
     if dim < 0 or dim > MAX_DIM or extent_rows < 0 or extent_rows > MAX_EXTENT_ROWS:
         return E_ARG
-    if storage < -1 or storage > I8:
+    if storage != -1 and check_dtype(storage) != OK:
         return E_DTYPE
     var fds = List[Int](length=2, fill=-1)
     if sim == 0:
@@ -710,7 +688,7 @@ def vdb_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim: Int
     var db = Db(
         sim, fds^, 0, F32, 0, 0, 0, 0, 0, 0, 0, 0, 0, False, 0,
         List[Int](), List[UInt64](), List[Int](), List[UInt64](), List[Int](), List[Float32](), List[Int64](),
-        List[UInt8](), List[Float32](),
+        List[UInt8](),
         0, 0, 0, 0, List[UInt8](), List[UInt64](), List[Int](), List[Int64](), List[Float32](),
         List[Bool](length=MAX_READERS, fill=False), List[Int](length=MAX_READERS, fill=0),
         List[UInt64](length=MAX_READERS, fill=0), List[Int](length=MAX_READERS, fill=0), False, 0, 0,
@@ -758,10 +736,8 @@ def vdb_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
         return E_NULL
     var db = dbp(h)
     var enc = List[UInt8](length=db[].enc_bytes(), fill=0)
-    var aux = List[Float32](length=AUX, fill=0)
-    st = encode_row(db[].dtype, fptr(vec), db[].dim, Int(enc.unsafe_ptr()), fmut(Int(aux.unsafe_ptr())))
+    st = encode_row(db[].dtype, fptr(vec), db[].dim, Int(enc.unsafe_ptr()))
     _ = enc^
-    _ = aux^
     if st != OK:
         return st
     var id = db[].rows
@@ -873,11 +849,6 @@ def vdb_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
                 tagb[0] = db[].a_tag[a]
                 if not db[].wr(MAIN, db[].vec_off(id), Int(db[].a_enc.unsafe_ptr()) + a * db[].enc_bytes(), db[].enc_bytes()):
                     return E_IO
-                if db[].dtype == I8:
-                    if not db[].wr(MAIN, db[].orig_off(id), Int(db[].a_vec.unsafe_ptr()) + a * db[].dim * 4, db[].orig_bytes()):
-                        return E_IO
-                    if not db[].wr(MAIN, db[].aux_off(id), Int(db[].a_aux.unsafe_ptr()) + a * AUX * 4, db[].aux_bytes()):
-                        return E_IO
                 if not db[].wr(MAIN, db[].tag_off(id), Int(tagb.unsafe_ptr()), 8):
                     return E_IO
                 if not db[].wr(MAIN, db[].live_off(id), Int(one.unsafe_ptr()), 1):
@@ -1021,8 +992,6 @@ def vdb_reader_view(h: Int, r: Int64, cap: Int64, out_live: Int, out_tags: Int, 
         if id < v.main_rows:
             if db[].dtype == F32:
                 _ = db[].rd(MAIN, db[].vec_off(id), dst, dim * 4)
-            elif db[].dtype == I8:
-                _ = db[].rd(MAIN, db[].orig_off(id), dst, dim * 4)
             else:
                 _ = db[].rd(MAIN, db[].vec_off(id), hp, dim * 2)
             _ = db[].rd(MAIN, db[].tag_off(id), out_tags + id * 8, 8)
@@ -1084,23 +1053,17 @@ def vdb_reader_search(
             continue
         var data: Int
         var tags: Int
-        var aux: Int
-        var orig: Int
         if seg < nseg - 1:
             data = m + db[].vec_off(lo)
             tags = m + db[].tag_off(lo)
-            aux = m + db[].aux_off(lo)
-            orig = m + db[].orig_off(lo)
         else:
             lo = v.main_rows
             var a = tail_start(db[], Int(r))
             data = Int(db[].a_enc.unsafe_ptr()) + a * db[].enc_bytes()
             tags = Int(db[].a_tag.unsafe_ptr()) + a * 8
-            aux = Int(db[].a_aux.unsafe_ptr()) + a * AUX * 4
-            orig = Int(db[].a_vec.unsafe_ptr()) + a * dim * 4
         st = vdb_search_ex(
-            data, db[].dtype, aux, orig, Int64(n), Int64(dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq,
-            filter_on, filter_tags, k, metric, nchunks, Int(e_ids.unsafe_ptr()), Int(e_sc.unsafe_ptr()), Int(e_cnt.unsafe_ptr()), 0,
+            data, db[].dtype, Int64(n), Int64(dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq,
+            filter_on, filter_tags, k, metric, nchunks, Int(e_ids.unsafe_ptr()), Int(e_sc.unsafe_ptr()), Int(e_cnt.unsafe_ptr()),
         )
         if st != OK:
             break

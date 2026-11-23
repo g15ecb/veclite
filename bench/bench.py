@@ -15,11 +15,11 @@ LIB.vdb_search.argtypes = [F, I, I, I64, U8, F, I, U8, I64, I, I32, I, I64, F, I
 LIB.vdb_scores.argtypes = [F, I, I, F, I, I32, F]
 LIB.vdb_validate_rows.argtypes = [F, I, I, I32, I64]
 P = ctypes.c_void_p
-LIB.vdb_encode.argtypes = [I32, F, I, I, P, P, I64]
-LIB.vdb_search_ex.argtypes = [P, I32, P, P, I, I, I64, U8, F, I, U8, I64, I, I32, I, I64, F, I64, I64]
+LIB.vdb_encode.argtypes = [I32, F, I, I, P, I64]
+LIB.vdb_search_ex.argtypes = [P, I32, I, I, I64, U8, F, I, U8, I64, I, I32, I, I64, F, I64]
 for fn in (LIB.vdb_search, LIB.vdb_scores, LIB.vdb_validate_rows, LIB.vdb_encode, LIB.vdb_search_ex):
     fn.restype = I32
-DTYPES = {"f32": 0, "f16": 1, "i8": 2}
+DTYPES = {"f32": 0, "f16": 1}
 
 
 def ptr(a, t):
@@ -47,11 +47,9 @@ class Table:
         check(LIB.vdb_validate_rows(ptr(data, F), n, data.shape[1], metric, ptr(bad, I64)), f"validate row {bad[0]}")
         self.storage = storage
         self.dt = DTYPES[storage]
-        self.enc = {"f32": data, "f16": np.empty(data.shape, dtype=np.float16), "i8": np.empty(data.shape, dtype=np.int8)}[storage]
-        self.aux = np.empty((n, 3), dtype=np.float32) if storage == "i8" else None
+        self.enc = data if storage == "f32" else np.empty(data.shape, dtype=np.float16)
         if storage != "f32":
-            check(LIB.vdb_encode(self.dt, ptr(data, F), n, data.shape[1], self.enc.ctypes.data, None if self.aux is None else self.aux.ctypes.data, ptr(bad, I64)), f"encode row {bad[0]}")
-        self.stats = np.zeros(2, dtype=np.int64)
+            check(LIB.vdb_encode(self.dt, ptr(data, F), n, data.shape[1], self.enc.ctypes.data, ptr(bad, I64)), f"encode row {bad[0]}")
 
     def queries(self, qs):
         qs = np.ascontiguousarray(qs, dtype=np.float32)
@@ -72,10 +70,9 @@ class Table:
         ids = np.empty((nq, k), dtype=np.int64)
         sc = np.empty((nq, k), dtype=np.float32)
         cnt = np.zeros(nq, dtype=np.int64)
-        check(LIB.vdb_search_ex(self.enc.ctypes.data, self.dt, None if self.aux is None else self.aux.ctypes.data,
-                                self.data.ctypes.data if self.storage == "i8" else None, *self.data.shape,
-                                ptr(self.tags, I64), ptr(self.live, U8), ptr(qs, F), nq, ptr(fo, U8), ptr(ft, I64), k,
-                                self.metric, nchunks, ptr(ids, I64), ptr(sc, F), ptr(cnt, I64), ptr(self.stats, I64)), "vdb_search_ex")
+        check(LIB.vdb_search_ex(self.enc.ctypes.data, self.dt, *self.data.shape, ptr(self.tags, I64), ptr(self.live, U8),
+                                ptr(qs, F), nq, ptr(fo, U8), ptr(ft, I64), k, self.metric, nchunks,
+                                ptr(ids, I64), ptr(sc, F), ptr(cnt, I64)), "vdb_search_ex")
         return [(ids[q, : cnt[q]], sc[q, : cnt[q]]) for q in range(nq)]
 
     def scores(self, qs):

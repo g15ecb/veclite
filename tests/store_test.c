@@ -316,8 +316,8 @@ static void test_api(void) {
     vdb_info(db, dinfo);
     CHECK(dinfo[VDB_INFO_DTYPE] == storage, "stored dtype %lld want %d", (long long)dinfo[VDB_INFO_DTYPE], storage);
     vdb_close(db);
-    CHECK(vdb_open(NULL, 0, 0, (storage + 1) % 3, sim, &db) == VDB_E_DTYPE, "dtype mismatch");
-    CHECK(vdb_open(NULL, 0, 0, 3, sim, &db) == VDB_E_DTYPE, "invalid storage");
+    CHECK(vdb_open(NULL, 0, 0, 1 - storage, sim, &db) == VDB_E_DTYPE, "dtype mismatch");
+    CHECK(vdb_open(NULL, 0, 0, 2, sim, &db) == VDB_E_DTYPE, "invalid storage (int8 removed)");
     CHECK(vdb_open(NULL, 0, 0, -2, sim, &db) == VDB_E_DTYPE, "invalid storage neg");
     CHECK(vdb_open(NULL, 0, 0, storage, sim, &db) == VDB_OK, "reopen same dtype");
     float huge[DIM] = {70000.0f};

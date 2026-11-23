@@ -22,7 +22,7 @@ for name, args in SIGS.items():
     getattr(LIB, name).argtypes = args
     getattr(LIB, name).restype = I32
 INFO = ["rows", "ntx", "published", "hdr_txn", "wal_frames", "salt", "main_rows", "poisoned", "dtype"]
-DTYPES = {"f32": 0, "f16": 1, "i8": 2}
+DTYPES = {"f32": 0, "f16": 1}
 
 
 def addr(a):

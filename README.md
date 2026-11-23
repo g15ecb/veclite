@@ -9,7 +9,7 @@ Throwaway spike. It checks whether Mojo can be the engine for an embeddable vect
 3. **Filters:** equality on one tag per row, set per query (`tag == value`, or no filter). Deleted rows are skipped as a filter miss.
 4. **Batching is built in.** Search takes `nq` queries. One query is `nq = 1`.
 5. **Workload:** embeddings with 1536 dimensions or more.
-6. **Storage type per collection:** float32 (default), float16 or int8, chosen when the file is created and stored in the header. Append and search still take float32. See [float16 and int8 storage](#float16-and-int8-storage).
+6. **Storage type per collection:** float32 (default) or float16, chosen when the file is created and stored in the header. Append and search still take float32. See [float16 storage](#float16-storage). int8 was tried and removed.
 
 ## Index decision
 
@@ -74,84 +74,56 @@ Sources: the OpenAI, Gemini, Cohere and Voyage docs, and the Qwen3-Embedding-8B 
   3. Validates each frame's contents (kinds, ids, finite vectors, and that a re-appended row matches the main file).
   4. Replays the frames, then truncates and syncs the WAL past the recovered prefix.
 
-## float16 and int8 storage
+## float16 storage
 
 ### What it is
 
-- **One setting at create time** (`storage` in `vdb_open`; `-1` accepts whatever an existing file has). Inserts and queries stay float32, and the library converts on insert.
-- **WAL records keep the float32 vectors.** Converting them is a pure function, so recovery and checkpoint re-derive identical bytes, and the WAL model is unchanged.
-- **float16:**
-  - Values beyond ±65,504 are rejected (`E_RANGE`).
-  - Search converts to float32 and runs the same tiled kernel and `fma` chain, so results are exact for the stored float16 vectors.
-- **int8, exact through rescoring:**
-  - Each row gets one scale (its largest value / 127). Per row, the file also stores the float32 originals and (scale, ‖x‖², ‖x − x̂‖).
-  - Stage 1 scans the int8 rows. For each row it computes an approximate score A and a rigorous error bound ε, keeping the top-k upper bounds (A + ε) and the lowest-M lower bounds (A − ε), with M = max(64, 4k).
-  - τ = the largest of the k best upper bounds. The candidates are the rows whose lower bound is ≤ τ.
-  - Each candidate is rescored with the float32 kernel. If the candidate buffer overflows, the query falls back to a full float32 scan.
-  - The result is bit-identical to float32 search.
+- **One setting at create time:** `storage` in `vdb_open` is `0` = float32 (default) or `1` = float16. `-1` accepts whatever an existing file has; a mismatch returns `E_DTYPE`.
+- **Inserts and queries stay float32.** The library converts on insert and rejects values beyond ±65,504 (`E_RANGE`).
+- **WAL records keep float32.** Converting is a pure function, so recovery and checkpoint re-derive identical bytes; the WAL model and proofs are unchanged.
+- **Search** converts each float16 lane to float32 and runs the same tiled `fma` kernel. Results are exact for the stored float16 vectors and bit-identical to a float32 search over the decoded vectors (tested). They are not identical to float32 search over the originals.
+- **Formal work:** none needed. The proofs treat the score function as given and the order as (score, id), and both still hold.
 
-### Lean, `formal/lean/TopK.lean` (Rescore section)
+### Results
 
-No `sorry`. Axioms: `propext`, `Quot.sound` and `Classical.choice` (from library lemmas).
+**In RAM** (100k rows, cosine, normalised embeddings, k = 10; ms per query):
 
-| Theorem | States | Why |
-|---|---|---|
-| `count_below_take` | In a sorted list, an element in the first k has fewer than k elements strictly below it | Base fact behind "rows outside the band can't be in the top-k". |
-| `isort_filter`, `take_filter_of_all` | Sorting commutes with filtering, and filtering that keeps all of the top-k leaves the top-k unchanged | Rescoring a subset gives the full answer if the subset contains the true top-k. |
-| `rescore_exact` | If every row's exact score lies in [lo, up], and τ has at least k rows with up ≤ τ (or every lo ≤ τ), then the top-k of {lo ≤ τ} equals the top-k of all rows | The core exactness argument. |
-| `tau_valid` | τ = max of the k smallest upper bounds satisfies the τ condition | The code computes τ exactly this way (bounded top-k on upper bounds, merged with `bstep`; `topk_correct` covers the chunked merge). |
-| `candidates_complete` | If the lowest-M lower-bound buffer isn't full, or holds an entry above τ, every row with lo ≤ τ is in it | The overflow rule: if neither holds, fall back to a full float32 scan. |
-| `int8_search_exact` | The above combined: rescoring buffer members with lo ≤ τ gives exactly the float32 top-k | The algorithm as implemented. |
-| `candidate_order_free` | Rescoring candidates in any order (distinct ids) gives the same top-k | The code visits candidates in lower-bound order, not row order. |
-| Mutants: τ from lower bounds; overflow test allowing a full buffer | Must fail to prove | The proof depends on both rules. |
+| dim | f32 batch 1 | f16 batch 1 | f32 batch 32 | f16 batch 32 | f16 recall@10 vs f32 |
+|---|---|---|---|---|---|
+| 768 | 2.63 | 1.50 | 0.40 | 0.45 | 0.9992 |
+| 1536 | 5.84 | 3.08 | 0.65 | 0.88 | 1.0 |
+| 3072 | 10.6 | 7.77 | 1.26 | 1.84 | 0.9992 |
 
-**Quint:** not used for this part. It's a single-threaded algorithm, which Lean covers for all sizes, and the WAL/reader model is unchanged because the WAL keeps float32.
+**From SSD, bigger than the cache** (4 GB of float32 per dimension; OS cache bypassed with `F_NOCACHE`; each file verified cold with `mincore` before and after timing; 64 MB double-buffered reads; streamed results asserted equal to in-RAM results):
 
-**Not in Lean, checked by tests instead:** that the computed ε really bounds |A − S| in floating point. The bound is:
+| dim | batch | f32 ms/q | f16 ms/q | speed-up |
+|---|---|---|---|---|
+| 1536 | 1 | 1,002–1,330 | 437 | 2.3–3.0x |
+| 1536 | 8 | 110 | 55 | 2.0x |
+| 1536 | 32 | 27.7 | 13.6 | 2.0x |
+| 3072 | 1 | 882 | 441 | 2.0x |
+| 3072 | 8 | 109 | 56 | 2.0x |
+| 3072 | 32 | 27.4 | 13.9 | 2.0x |
 
-- Cauchy–Schwarz for the quantization term ‖q‖·‖x − x̂‖.
-- γ(d) = (d+2)u / (1 − (d+2)u) for both `fma` chains, plus the rounding of the final combine for each metric.
-- Evaluated in float64, then inflated by 0.1%.
-
-### How the code conforms
-
-| Formal | Code |
-|---|---|
-| lo ≤ score ≤ up | `eps_bound` in `src/vdb.mojo`; `dtype_test` checks \|A − S\| ≤ ε for every row and query (1.48M checks, worst ratio 0.999 of the bound) |
-| τ = max of the k best upper bounds | Merged upper-bound buffer per query, then `max` |
-| `candidates_complete` overflow rule | `overflow = nl == mcap and lo_max <= tau`, then fallback |
-| Exact rescoring with the float32 kernel | `exact_score_m` uses `dots[1,1]`; the same lane-wise `fma` chain makes scores bit-identical to float32 search |
-| Mutants | `VDB_MUTANT_NO_EPS`, `TAU_FROM_LOW`, `NO_FALLBACK`: each produces wrong top-k results in `dtype_test` |
-
-Storage tests run the full crash/recovery/reader suite (29M checks) for each storage type. Other checks:
-
-- Re-appends must match the main file's stored bytes (for int8, the encoded vector and the originals).
-- Header dtype mismatch returns `E_DTYPE`.
-- float16 out-of-range values are rejected on append.
-
-### Results (100k rows, cosine, normalised low-rank + noise embeddings, k = 10)
-
+![ssd](results/graphs/ssd_f16_vs_f32.png)
 ![dtype](results/graphs/dtype_batch_dim.png)
 ![tradeoffs](results/graphs/dtype_tradeoffs.png)
 ![store](results/graphs/store_dtypes.png)
 
-| dim | f32 batch 1 | f16 batch 1 | i8 batch 1 | f32 batch 32 | f16 batch 32 | i8 batch 32 | f16 recall@10 vs f32 |
-|---|---|---|---|---|---|---|---|
-| 768 | 2.85 ms | 1.52 | 3.33 | 0.35 | 0.37 | 2.07 | 0.9992 |
-| 1536 | 5.98 | 4.98 | 10.0 | 0.96 | 0.86 | 7.85 | 1.0 |
-| 3072 | 10.9 | 7.36 | 18.5 | 1.45 | 1.49 | 14.2 | 0.9992 |
+- **Out of RAM, float16 is a clean 2x faster at every batch size.** Both types read at the SSD's ~4.5 GB/s, so time is purely bytes read, and float16 reads half. The 1536/batch-1 float32 runs varied (1.0–1.3 s), so that 3x is partly noise; 2x is the result.
+- **In RAM, single queries are 1.4–1.9x faster** (memory-bound). Batches of 32+ are 10–45% *slower* with float16: they are compute-bound and each lane pays a conversion.
+- **Kernel tuning didn't help the conversion cost.** An unroll × tile sweep (raw data in `results/f16_unroll_sweep.jsonl`) found no variant beyond noise, so the kernel stays as is. The variable 1536-dimension speed-up seen earlier was run-to-run noise: this run gives 1.9x.
+- **Storage:** the main file and memory footprint halve (336 → 168 MB at 50k × 1536), and ingest is about 20% faster. The WAL is unchanged.
+- **Recommendation:** float32 by default. Choose float16 when the collection is near or beyond RAM, or when single-query latency matters more than batch throughput.
 
-- **float16:**
-  - Half the file size, 1.2–1.9x faster for single queries (it reads half the bytes), and no gain for batches (they're compute-bound and the conversion costs cycles).
-  - Recall against float32 is 0.999–1.0. Results are exact for the stored float16 vectors.
-- **int8 exact: slower than float32 on realistic embeddings.** Two reasons, both measured:
-  1. **The rigorous bound is far too loose for normalised high-dimensional vectors.**
-     - Cauchy–Schwarz charges ‖q‖·‖x − x̂‖ ≈ 0.008, but the real error |q·(x − x̂)| is about 1e-4: 41x smaller at dim 768 and 81x at dim 3072.
-     - The gap between the 9th and 10th best score is about 3e-4–6e-4, so the ±ε band holds 45–175 rows even at n = 20k.
-     - At n = 100k and dim ≥ 1536 the candidate buffer overflows on almost every query, and the full float32 fallback runs on top of the int8 scan.
-  2. **The int8 kernel is compute-bound.** It converts int8 to float32 four lanes at a time, reaching about 24 GB/s against float32's 117 GB/s. A dot-product instruction on int8 (`SDOT`, with the query also quantized) is needed for int8 to be fast in any form.
-  - On the store benchmark, int8 also makes the file 1.25x bigger (it keeps the originals) and ingest 20% slower.
-- Where the bound is tight enough (dim 768, 10% filter), int8 exact is 2x faster than float32 for single queries (0.54 vs 1.05 ms), so the mechanism works. The bound is what fails at scale.
+### int8: tried and removed
+
+- int8 with **provably exact** rescoring was built, proved in Lean, and tested: bit-identical to float32 over 1.7M checks.
+- It was slower than float32 on realistic embeddings, for two reasons:
+  - **The bound is too loose.** The Cauchy–Schwarz error bound is 41–81x larger than the actual error, so candidate sets overflow and queries fall back to a float32 scan.
+  - **The kernel is too slow.** Without `SDOT` the int8 scan runs at about 24 GB/s.
+- Removed from `main`. The code, proof (`int8_search_exact`), tests and benchmarks are at tag [`int8-exact-experiment`](https://github.com/g15ecb/vecdb-spike/tree/int8-exact-experiment).
+- Approximate int8 (rescore the top few multiples of k) would be fast but breaks the exact-search decision, so it wasn't pursued.
 
 ## Formal properties
 
@@ -310,8 +282,8 @@ All graphs are in `results/graphs/`. Raw data is in `results/*.json`.
 | S2b | Apple GPU through Mojo | **BLOCKED**: needs full Xcode |
 | S3 | Filtered batched top-k, formally verified | **VALIDATED** |
 | S4 | File format + WAL: crash-safe, snapshot readers, formally modelled | **VALIDATED** within the limits below |
-| S5a | float16 storage | **VALIDATED**: 2x smaller, up to 1.9x faster single-query, recall 0.999+ |
-| S5b | int8 with provably exact rescoring | **INVALIDATED for performance**: correct and bit-identical, but the rigorous bound is 40–80x looser than real error on normalised embeddings, so it falls back to float32; the kernel also needs `SDOT` |
+| S5a | float16 storage | **VALIDATED**: half the size, 2x faster from SSD at every batch size, 1.4–1.9x faster single-query in RAM, slower for in-RAM batches; recall 0.999+ |
+| S5b | int8 with provably exact rescoring | **INVALIDATED and removed** (tag `int8-exact-experiment`): correct but slower than float32 |
 
 ### Limits and gaps
 
@@ -334,5 +306,5 @@ All graphs are in `results/graphs/`. Raw data is in `results/*.json`.
 uv venv -p 3.12 .venv && source .venv/bin/activate
 uv pip install mojo==1.2.0 max==26.7.0 numpy faiss-cpu matplotlib
 ./check_all.sh
-python -I bench/bench_store.py && python -I bench/sweep_kernel.py 100000 && python -I bench/sweep_dtype.py 100000 && python -I bench/bench_formal.py && python -I bench/plots.py
+python -I bench/bench_store.py && python -I bench/sweep_kernel.py 100000 && python -I bench/sweep_dtype.py 100000 && python -I bench/bench_ssd.py 4 1536,3072 && python -I bench/bench_formal.py && python -I bench/plots.py
 ```
