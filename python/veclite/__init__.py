@@ -4,7 +4,7 @@ import sys
 
 import numpy as np
 
-__all__ = ["open", "Database", "VecliteError", "ERRORS"]
+__all__ = ["open", "Database", "VecliteError", "ERRORS", "gpu_available"]
 
 ERRORS = {
     -1: "null argument", -2: "bad row count", -3: "bad or mismatched dimension", -4: "bad k", -5: "bad metric",
@@ -12,9 +12,11 @@ ERRORS = {
     -10: "bad chunk count", -11: "bad filter", -12: "vector has NaN/inf", -13: "zero vector", -14: "bad batch size",
     -15: "bad or mismatched storage type", -16: "value out of float16 range", -20: "I/O error", -21: "corrupt file",
     -22: "invalid state", -23: "unknown or deleted row id", -24: "reader error", -25: "bad argument",
+    -30: "GPU error", -31: "no usable GPU",
 }
 METRICS = {"l2": 0, "dot": 1, "cosine": 2}
 STORAGE = {"f32": 0, "f16": 1}
+DEVICES = {"auto": 0, "cpu": 1, "gpu": 2}
 _I, _I32, _P = ctypes.c_int64, ctypes.c_int32, ctypes.c_void_p
 
 
@@ -39,7 +41,8 @@ def _load():
         "veclite_open": [ctypes.c_char_p, _I, _I, _I32, _I, _P], "veclite_close": [_I],
         "veclite_append": [_I, _P, _I, _P], "veclite_delete": [_I, _I], "veclite_commit": [_I, _P],
         "veclite_checkpoint": [_I, _P], "veclite_reader_begin": [_I, _P], "veclite_reader_end": [_I, _I],
-        "veclite_reader_search": [_I, _I, _P, _I, _P, _P, _I, _I32, _I, _P, _P, _P], "veclite_info": [_I, _P],
+        "veclite_reader_search_dev": [_I, _I, _P, _I, _P, _P, _I, _I32, _I, _I32, _I, _P, _P, _P, _P],
+        "veclite_info": [_I, _P], "veclite_gpu_available": [],
     }
     for fn, args in sigs.items():
         getattr(lib, fn).argtypes = args
@@ -66,10 +69,25 @@ def _ptr(a):
     return None if a is None else a.ctypes.data
 
 
+def gpu_available():
+    return _lib().veclite_gpu_available() == 1
+
+
+def _device(device):
+    if device not in DEVICES:
+        raise ValueError(f"device must be one of {sorted(DEVICES)}")
+    return device
+
+
 class Database:
-    def __init__(self, path, dim=0, storage=None, extent_rows=0):
+    def __init__(self, path, dim=0, storage=None, extent_rows=0, device="auto", gpu_min_batch=64):
         if storage is not None and storage not in STORAGE:
             raise ValueError(f"storage must be one of {sorted(STORAGE)}")
+        if int(gpu_min_batch) < 1:
+            raise ValueError("gpu_min_batch must be >= 1")
+        self.device = _device(device)
+        self.gpu_min_batch = int(gpu_min_batch)
+        self.last_device = None
         if dim < 0:
             raise ValueError("dim must be >= 0 (0 = take it from an existing file)")
         out = np.zeros(1, dtype=np.int64)
@@ -126,12 +144,13 @@ class Database:
         _check(_lib().veclite_checkpoint(self._handle(), None), "checkpoint")
 
     def info(self):
-        out = np.zeros(10, dtype=np.int64)
+        out = np.zeros(11, dtype=np.int64)
         _check(_lib().veclite_info(self._handle(), _ptr(out)), "info")
-        keys = ["rows", "txn", "published", "checkpointed_txn", "wal_frames", "salt", "main_rows", "poisoned", "storage", "dim"]
+        keys = ["rows", "txn", "published", "checkpointed_txn", "wal_frames", "salt", "main_rows", "poisoned", "storage", "dim", "gpu_rows"]
         return dict(zip(keys, out.tolist()))
 
-    def search(self, queries, k=10, tag=None, metric="cosine"):
+    def search(self, queries, k=10, tag=None, metric="cosine", device=None):
+        dev = DEVICES[_device(device or self.device)]
         if metric not in METRICS:
             raise ValueError(f"metric must be one of {sorted(METRICS)}")
         q = np.ascontiguousarray(queries, dtype=np.float32)
@@ -148,16 +167,17 @@ class Database:
         ids = np.empty((nq, k), dtype=np.int64)
         sc = np.empty((nq, k), dtype=np.float32)
         cnt = np.zeros(nq, dtype=np.int64)
-        h, r = self._handle(), np.zeros(1, dtype=np.int64)
+        h, r, used = self._handle(), np.zeros(1, dtype=np.int64), np.zeros(1, dtype=np.int32)
         _check(_lib().veclite_reader_begin(h, _ptr(r)), "search")
         try:
-            _check(_lib().veclite_reader_search(h, int(r[0]), _ptr(q), nq, _ptr(fo), _ptr(ft), k, METRICS[metric], 16,
-                                                _ptr(ids), _ptr(sc), _ptr(cnt)), "search")
+            _check(_lib().veclite_reader_search_dev(h, int(r[0]), _ptr(q), nq, _ptr(fo), _ptr(ft), k, METRICS[metric], 16,
+                                                    dev, self.gpu_min_batch, _ptr(ids), _ptr(sc), _ptr(cnt), _ptr(used)), "search")
         finally:
             _lib().veclite_reader_end(h, int(r[0]))
+        self.last_device = "gpu" if used[0] else "cpu"
         hits = [(ids[i, : cnt[i]].copy(), sc[i, : cnt[i]].copy()) for i in range(nq)]
         return hits[0] if single else hits
 
 
-def open(path, dim=0, storage=None):
-    return Database(path, dim, storage)
+def open(path, dim=0, storage=None, device="auto", gpu_min_batch=64):
+    return Database(path, dim, storage, device=device, gpu_min_batch=gpu_min_batch)

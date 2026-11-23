@@ -47,6 +47,15 @@ for m in NO_TIE_BREAK POST_FILTER LOCAL_K_MINUS_ONE QUERY_MIX; do
   fi
 done
 
+if [[ "$VECLITE_GPU" == 1 ]]; then
+  echo "== GPU routing mutants must fail"
+  for m in GPU_STALE_LIVE GPU_SKIP_GAP; do
+    scripts/build.sh "build/rmut_$m" -D "VECLITE_MUTANT_$m=true"
+    lib="$(ls "$PWD"/build/rmut_$m/libveclite.*)"
+    expect_fail "$m" env VECLITE_LIB="$lib" python -m pytest -q tests/python/test_device.py
+  done
+fi
+
 echo "== storage mutants must fail"
 for m in ACK_BEFORE_SYNC CKPT_IGNORES_READERS RESTART_EARLY SKIP_DATA_SYNC UNSYNCED_RESTART_HDR NO_RECOVERY_TRUNCATE; do
   scripts/build.sh "build/smut_$m" -D "VECLITE_MUTANT_$m=true"

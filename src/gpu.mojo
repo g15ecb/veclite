@@ -4,10 +4,12 @@ from max.gpu.sync import barrier
 from max.gpu.primitives import warp
 from std.memory import unsafe_stack_allocation
 from std.memory.alloc import unsafe_alloc
-from std.sys import size_of, get_defined_int
+from std.sys import size_of, get_defined_int, get_defined_bool
 from kernel import OK, E_NULL, E_K, E_SCORE_NONFINITE, E_FILTER, MAX_K, F16, cand_le, bstep, check_shape, check_metric, check_batch, check_dtype, query_norms, sqnorm, finish, elem_bytes, fptr, fmut, iptr, imut, bptr, L2, DOT, COSINE, MUTANT_POST_FILTER, MUTANT_LOCAL_K_MINUS_ONE
 
-comptime E_GPU: Int32 = -30
+comptime MUTANT_GPU_STALE_LIVE = get_defined_bool["VECLITE_MUTANT_GPU_STALE_LIVE"]()
+comptime MUTANT_GPU_SKIP_GAP = get_defined_bool["VECLITE_MUTANT_GPU_SKIP_GAP"]()
+comptime GPU_REFRESH_FRACTION = get_defined_int["VECLITE_GPU_REFRESH_FRACTION", 4]()
 comptime LANES = 32
 comptime WARPS = 8
 comptime PER_LANE = 64
@@ -495,3 +497,106 @@ def veclite_gpu_search(
             imut(out_counts)[unsafe_offset=q] = 0
     _ = qn2^
     return st
+
+def check_device(device: Int32, min_batch: Int64, nq: Int64, filter_on: Int, mut filtered: Bool) -> Int32:
+    if device < DEV_AUTO or device > DEV_GPU or min_batch < 1:
+        return E_ARG
+    filtered = False
+    if filter_on != 0:
+        for q in range(Int(nq)):
+            var f = bptr(filter_on)[unsafe_offset=q]
+            if f > 1:
+                return E_FILTER
+            filtered = filtered or f == 1
+    return OK
+
+
+def gpu_detect() -> Bool:
+    try:
+        var c = DeviceContext()
+        _ = c^
+        return True
+    except:
+        return False
+
+
+@export("veclite_gpu_available")
+def veclite_gpu_available() abi("C") -> Int32:
+    return 1 if gpu_detect() else 0
+
+
+@export("veclite_close")
+def veclite_close(h: Int) abi("C") -> Int32:
+    if h != 0 and dbp(h)[].gpu > 0:
+        _ = veclite_gpu_close(dbp(h)[].gpu)
+        dbp(h)[].gpu = 0
+    return close_db(h)
+
+
+def gpu_refresh(mut db: Db) raises:
+    var rows = db.main_rows
+    var vec = List[UInt8](length=max(rows * db.enc_bytes(), 1), fill=0)
+    var tags = List[Int64](length=max(rows, 1), fill=0)
+    var live = List[UInt8](length=max(rows, 1), fill=1)
+    for i in range(rows):
+        live[i] = db.live[i]
+    if not copy_main_rows(db, rows, Int(vec.unsafe_ptr()), Int(tags.unsafe_ptr())):
+        raise Error("read main rows")
+    if db.gpu > 0:
+        _ = veclite_gpu_close(db.gpu)
+        db.gpu = 0
+        db.gpu_rows = 0
+    var out = List[Int64](length=1, fill=0)
+    if gpu_open_impl(Int(vec.unsafe_ptr()), db.dtype, rows, db.dim, Int(tags.unsafe_ptr()), Int(live.unsafe_ptr()), Int(out.unsafe_ptr())) != OK:
+        raise Error("gpu open")
+    db.gpu = Int(out[0])
+    db.gpu_rows = rows
+    _ = vec^
+    _ = tags^
+    _ = live^
+
+
+@export("veclite_reader_search_dev")
+def veclite_reader_search_dev(
+    h: Int, r: Int64, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int, k: Int64, metric: Int32, nchunks: Int64,
+    device: Int32, min_batch: Int64, out_ids: Int, out_scores: Int, out_counts: Int, out_used: Int,
+) abi("C") -> Int32:
+    if out_used != 0:
+        GS(unsafe_from_address=out_used)[unsafe_offset=0] = 0
+    var st = check_search(h, r, queries, nq, k, out_ids, out_scores, out_counts)
+    var filtered = False
+    if st == OK:
+        st = check_device(device, min_batch, nq, filter_on, filtered)
+    if st != OK:
+        return st
+    var db = dbp(h)
+    var want = device == DEV_GPU or (device == DEV_AUTO and nq >= min_batch and not filtered and db[].main_rows > 0)
+    if want and db[].gpu_avail == 0:
+        db[].gpu_avail = 1 if gpu_detect() else 2
+    if want and db[].gpu_avail != 1:
+        if device == DEV_GPU:
+            return E_NO_GPU
+        want = False
+    if not want or db[].main_rows == 0:
+        return search_cpu(h, r, queries, nq, filter_on, filter_tags, k, metric, nchunks, out_ids, out_scores, out_counts)
+    try:
+        if db[].gpu == 0 or (db[].main_rows - db[].gpu_rows) * GPU_REFRESH_FRACTION > db[].gpu_rows:
+            gpu_refresh(db[])
+        var v = make_view(db[], Int(r))
+        var split = min(db[].gpu_rows, v.main_rows)
+        comptime if not MUTANT_GPU_STALE_LIVE:
+            write_into(gp(db[].gpu)[].live, Int(v.live.unsafe_ptr()), split)
+        st = veclite_gpu_search(db[].gpu, queries, nq, filter_on, filter_tags, k, metric, out_ids, out_scores, out_counts, 0)
+        if st == OK:
+            var from_row = v.main_rows if MUTANT_GPU_SKIP_GAP else split
+            st = search_rows(db[], Int(r), v, from_row, queries, nq, filter_on, filter_tags, k, metric, nchunks, out_ids, out_scores, out_counts)
+        _ = v^
+    except:
+        st = E_GPU
+    if st != OK:
+        for q in range(Int(nq)):
+            imut(out_counts)[unsafe_offset=q] = 0
+        return st
+    if out_used != 0:
+        GS(unsafe_from_address=out_used)[unsafe_offset=0] = 1
+    return OK

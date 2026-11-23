@@ -190,6 +190,22 @@ def gpu(rows):
     save(fig, "gpu_speedup.png")
 
 
+def device(rows):
+    dims = sorted({r["dim"] for r in rows})
+    fig, axes = plt.subplots(1, len(dims), figsize=(5 * len(dims), 4.2), sharey=True)
+    for ax, dim in zip(axes, dims):
+        sub = sorted((r for r in rows if r["dim"] == dim), key=lambda r: r["batch"])
+        b = [r["batch"] for r in sub]
+        ax.plot(b, [r["cpu_ms_per_q"] for r in sub], "-s", color="C0", label="device='cpu'")
+        ax.plot(b, [r["gpu_ms_per_q"] for r in sub], "-o", color="C3", label="device='gpu'")
+        ax.plot(b, [r["auto_ms_per_q"] for r in sub], "--", color="k", lw=2, label="device='auto' (default)")
+        ax.set(xscale="log", yscale="log", xlabel="queries per batch", title=f"dim {dim}, {sub[0]['n']:,} rows, via Database.search")
+        ax.grid(True, which="both", alpha=0.3)
+    axes[0].set_ylabel("ms per query")
+    axes[-1].legend(fontsize=8)
+    save(fig, "device_routing.png")
+
+
 def formal(res):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     s = res["wal_samples"]
@@ -222,6 +238,8 @@ def main():
         ssd(r)
     if (r := load("gpu_sweep.json")) is not None:
         gpu(r)
+    if (r := load("device_sweep.json")) is not None:
+        device(r)
     if (r := load("formal_bench.json")) is not None:
         formal(r)
 

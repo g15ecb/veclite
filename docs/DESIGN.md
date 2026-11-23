@@ -181,6 +181,60 @@ No Quint model is needed: the kernels are deterministic per chunk, and the merge
 - **Profile at batch 512, dim 1536:** scoring 179 ms, selection 22 ms, merge 8 ms, copies about 2 ms.
 - **Recommendation:** use the GPU only for large unfiltered batches (≥ 128 queries). Everything else stays on the CPU. For the batch path, the next step is simdgroup-matrix scoring, which should beat FAISS.
 
+## GPU routing inside the database
+
+`Database.search(..., device="auto" | "cpu" | "gpu")`, also settable per database at `open()`. The C call is `veclite_reader_search_dev`.
+
+- **`auto` (default):** uses the GPU when a usable one is present (`veclite_gpu_available`), the batch has at least `gpu_min_batch` queries (default 64), and no query has a filter. Otherwise it uses the CPU. It never fails because a GPU is missing.
+- **`gpu`:** forces the GPU and raises `-31 no usable GPU` if there isn't one. Filters work, but on Apple GPUs they are slower than on the CPU.
+- **`cpu`:** always the CPU. `db.last_device` reports which device actually ran.
+- **What lives on the GPU:**
+  - The GPU holds a copy of the checkpointed rows (vectors and tags). Main-file rows are append-only and immutable, so the copy never goes stale, only short.
+  - Every search uploads the reader's own live flags.
+  - Rows the copy doesn't cover are searched on the CPU: rows checkpointed since the last refresh, and rows still in the WAL. The two results are merged with the proven `bstep` merge.
+  - The copy is rebuilt only once more than 25% of rows have been checkpointed since the last rebuild. Rebuilding costs O(n).
+- **Linux builds without GPU support** link a stub with the same API: `auto` uses the CPU and `gpu` raises `-31`.
+
+### Quint (`formal/gpu_route.qnt`)
+
+The model covers appends, deletes, checkpoints (which never go past the reader's snapshot), GPU refreshes at any time, reader snapshots, and the split search.
+
+| Property | Enforces | Why |
+|---|---|---|
+| `exact` | The split search equals the reference top-k over the reader's snapshot | The GPU route returns exactly what the CPU would. |
+| `sorted` | Results are ascending by (score, id) | Same output contract as the CPU. |
+| Witnesses: GPU copy stale while searching; deletes after a refresh | Must be reachable | The dangerous situations really occur. |
+| `witnessReaderOlderThanGpu` | Unreachable (expected pass) | Checkpoints never go past a reader's snapshot, so the GPU copy is never ahead of a reader. The `min(gpuRows, viewRows)` guard is defence in depth; mutant `NoRefreshLimit` passes for the same reason. |
+| Mutant `StaleLive` (GPU uses live flags captured at refresh) | Must fail | Deleted rows would come back. |
+| Mutant `SkipGap` (CPU starts at main rows, not GPU rows) | Must fail | Rows checkpointed since the last refresh would be lost. |
+
+### Lean
+
+`split_correct`: searching the GPU's part and the CPU's part separately and merging them equals the top-k of all rows. This is `topk_correct` with two chunks.
+
+### Tests
+
+- `tests/python/test_device.py` uses integer-valued data (exact in float32), so GPU and CPU results must be identical, ids and scores. It walks through:
+  - a fresh GPU copy;
+  - deletes after the copy was made;
+  - rows still in the WAL;
+  - a small checkpoint that leaves a CPU-searched gap;
+  - a large checkpoint that triggers a refresh;
+  - per-query filters;
+  - all for L2 and dot product, float32 and float16.
+- The routing checks confirm that `auto` uses the GPU only at or above the cutoff and never for filtered batches.
+- On builds without a GPU, the same tests check the stub behaviour.
+- Mutants `VECLITE_MUTANT_GPU_STALE_LIVE` and `VECLITE_MUTANT_GPU_SKIP_GAP` each fail 4 tests.
+
+### Results (100k rows, cosine, through `Database.search`; ms per query)
+
+![routing](../results/graphs/device_routing.png)
+
+- The GPU wins from batch 64 at every dimension. At dim 1536 it is 0.50 vs 0.92 ms at batch 64, and 0.46 vs 1.35 ms at batch 512. Hence the default `gpu_min_batch=64`.
+- At dim 3072 the GPU already wins at batch 32 (1.69 vs 2.07 ms), so a cutoff that falls with dimension would gain a little more. Not done yet.
+- `auto` tracks the faster device at every measured point except batch 32 at dim 1536 and 3072, just below the cutoff.
+- Top-10 results matched the CPU exactly (agreement 1.0) at every dimension.
+
 ## Formal properties
 
 ### Quint: search, `formal/topk.qnt`

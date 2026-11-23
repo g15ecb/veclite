@@ -11,8 +11,14 @@
 #define VECLITE_E_ID (-23)
 #define VECLITE_E_READER (-24)
 #define VECLITE_E_ARG (-25)
+#define VECLITE_E_GPU (-30)
+#define VECLITE_E_NO_GPU (-31)
 
-enum { VECLITE_INFO_ROWS, VECLITE_INFO_NTX, VECLITE_INFO_PUBLISHED, VECLITE_INFO_HDR_TXN, VECLITE_INFO_WAL_FRAMES, VECLITE_INFO_SALT, VECLITE_INFO_MAIN_ROWS, VECLITE_INFO_POISONED, VECLITE_INFO_DTYPE, VECLITE_INFO_DIM, VECLITE_INFO_LEN };
+#define VECLITE_DEVICE_AUTO 0
+#define VECLITE_DEVICE_CPU 1
+#define VECLITE_DEVICE_GPU 2
+
+enum { VECLITE_INFO_ROWS, VECLITE_INFO_NTX, VECLITE_INFO_PUBLISHED, VECLITE_INFO_HDR_TXN, VECLITE_INFO_WAL_FRAMES, VECLITE_INFO_SALT, VECLITE_INFO_MAIN_ROWS, VECLITE_INFO_POISONED, VECLITE_INFO_DTYPE, VECLITE_INFO_DIM, VECLITE_INFO_GPU_ROWS, VECLITE_INFO_LEN };
 
 int32_t veclite_sim_new(int64_t *out_sim);
 int32_t veclite_sim_free(int64_t sim);
@@ -35,5 +41,10 @@ int32_t veclite_reader_search(int64_t db, int64_t reader, const float *queries, 
                           const int64_t *filter_tags, int64_t k, int32_t metric, int64_t nchunks, int64_t *out_ids,
                           float *out_scores, int64_t *out_counts);
 int32_t veclite_info(int64_t db, int64_t *out);
+int32_t veclite_gpu_available(void);
+int32_t veclite_reader_search_dev(int64_t db, int64_t reader, const float *queries, int64_t nq, const uint8_t *filter_on,
+                                  const int64_t *filter_tags, int64_t k, int32_t metric, int64_t nchunks, int32_t device,
+                                  int64_t gpu_min_batch, int64_t *out_ids, float *out_scores, int64_t *out_counts,
+                                  int32_t *out_used_gpu);
 
 #endif

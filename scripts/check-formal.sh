@@ -8,6 +8,9 @@ SAMPLES="${SAMPLES:-20000}" formal/check.sh
 echo "== quint: file format + WAL"
 SAMPLES="${SAMPLES:-20000}" formal/check_wal.sh
 
+echo "== quint: GPU routing"
+SAMPLES="${SAMPLES:-20000}" formal/check_gpu_route.sh
+
 echo "== lean"
 for f in TopK Wal; do
   out=$(lean "formal/lean/$f.lean" 2>&1)

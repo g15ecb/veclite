@@ -10,6 +10,11 @@ comptime E_STATE: Int32 = -22
 comptime E_ID: Int32 = -23
 comptime E_READER: Int32 = -24
 comptime E_ARG: Int32 = -25
+comptime E_GPU: Int32 = -30
+comptime E_NO_GPU: Int32 = -31
+comptime DEV_AUTO: Int32 = 0
+comptime DEV_CPU: Int32 = 1
+comptime DEV_GPU: Int32 = 2
 
 comptime MUTANT_ACK_BEFORE_SYNC = get_defined_bool["VECLITE_MUTANT_ACK_BEFORE_SYNC"]()
 comptime MUTANT_CKPT_IGNORES_READERS = get_defined_bool["VECLITE_MUTANT_CKPT_IGNORES_READERS"]()
@@ -237,6 +242,9 @@ struct Db(Movable):
     var poisoned: Bool
     var map_addr: Int
     var map_len: Int
+    var gpu: Int
+    var gpu_rows: Int
+    var gpu_avail: Int
 
     def frame_bytes(self) -> Int:
         return FRAME_HDR + self.dim * 4
@@ -694,7 +702,7 @@ def veclite_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim:
         List[UInt8](),
         0, 0, 0, 0, List[UInt8](), List[UInt64](), List[Int](), List[Int64](), List[Float32](),
         List[Bool](length=MAX_READERS, fill=False), List[Int](length=MAX_READERS, fill=0),
-        List[UInt64](length=MAX_READERS, fill=0), List[Int](length=MAX_READERS, fill=0), False, 0, 0,
+        List[UInt64](length=MAX_READERS, fill=0), List[Int](length=MAX_READERS, fill=0), False, 0, 0, 0, 0, 0,
     )
     var st = load_main(db, Int(dim), Int(extent_rows), storage)
     if st == OK:
@@ -718,8 +726,7 @@ def close_fds(db: Db):
             _ = external_call["close", c_int](c_int(f))
 
 
-@export("veclite_close")
-def veclite_close(h: Int) abi("C") -> Int32:
+def close_db(h: Int) -> Int32:
     if h == 0:
         return E_NULL
     var p = dbp(h)
@@ -1019,11 +1026,7 @@ def tail_start(db: Db, r: Int) -> Int:
     return len(db.a_tag)
 
 
-@export("veclite_reader_search")
-def veclite_reader_search(
-    h: Int, r: Int64, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int,
-    k: Int64, metric: Int32, nchunks: Int64, out_ids: Int, out_scores: Int, out_counts: Int,
-) abi("C") -> Int32:
+def check_search(h: Int, r: Int64, queries: Int, nq: Int64, k: Int64, out_ids: Int, out_scores: Int, out_counts: Int) -> Int32:
     var st = reader_ok(h, r)
     if st != OK:
         return st
@@ -1033,56 +1036,94 @@ def veclite_reader_search(
         return E_BATCH
     if k <= 0 or k > MAX_K:
         return E_K
-    var db = dbp(h)
-    var v = make_view(db[], Int(r))
+    for q in range(Int(nq)):
+        imut(out_counts)[unsafe_offset=q] = 0
+    return OK
+
+
+def search_rows(
+    mut db: Db, r: Int, v: View, from_row: Int, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int,
+    k: Int64, metric: Int32, nchunks: Int64, out_ids: Int, out_scores: Int, out_counts: Int,
+) -> Int32:
     var ni = Int(nq)
     var ki = Int(k)
-    var dim = db[].dim
-    var counts = imut(out_counts)
-    for q in range(ni):
-        counts[unsafe_offset=q] = 0
-    var size = db[].fsize(MAIN)
-    var m = db[].map_main(size)
+    var size = db.fsize(MAIN)
+    var m = db.map_main(size)
     if size > 0 and m == -1:
         return E_IO
     var e_ids = List[Int64](length=ni * ki, fill=0)
     var e_sc = List[Float32](length=ni * ki, fill=0)
     var e_cnt = List[Int64](length=ni, fill=0)
-    var nseg = (v.main_rows + db[].extent_rows - 1) // db[].extent_rows + 1
+    var nseg = (v.main_rows + db.extent_rows - 1) // db.extent_rows + 1
+    var st = OK
     for seg in range(nseg):
-        var lo = seg * db[].extent_rows
-        var n = min(db[].extent_rows, v.main_rows - lo) if seg < nseg - 1 else v.tail
-        if n <= 0:
-            continue
+        var lo = seg * db.extent_rows
+        var n: Int
         var data: Int
         var tags: Int
         if seg < nseg - 1:
-            data = m + db[].vec_off(lo)
-            tags = m + db[].tag_off(lo)
+            var hi = min(lo + db.extent_rows, v.main_rows)
+            lo = max(lo, from_row)
+            n = hi - lo
+            data = m + db.vec_off(lo)
+            tags = m + db.tag_off(lo)
         else:
             lo = v.main_rows
-            var a = tail_start(db[], Int(r))
-            data = Int(db[].a_enc.unsafe_ptr()) + a * db[].enc_bytes()
-            tags = Int(db[].a_tag.unsafe_ptr()) + a * 8
+            n = v.tail
+            var a = tail_start(db, r)
+            data = Int(db.a_enc.unsafe_ptr()) + a * db.enc_bytes()
+            tags = Int(db.a_tag.unsafe_ptr()) + a * 8
+        if n <= 0:
+            continue
         st = veclite_search_ex(
-            data, db[].dtype, Int64(n), Int64(dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq,
+            data, db.dtype, Int64(n), Int64(db.dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq,
             filter_on, filter_tags, k, metric, nchunks, Int(e_ids.unsafe_ptr()), Int(e_sc.unsafe_ptr()), Int(e_cnt.unsafe_ptr()),
         )
         if st != OK:
             break
         for q in range(ni):
-            var length = Int(counts[unsafe_offset=q])
+            var length = Int(imut(out_counts)[unsafe_offset=q])
             for j in range(Int(e_cnt[q])):
                 length = bstep(fmut(out_scores).unsafe_offset(q * ki), imut(out_ids).unsafe_offset(q * ki), length, ki, e_sc[q * ki + j], e_ids[q * ki + j] + Int64(lo))
-            counts[unsafe_offset=q] = Int64(length)
-    _ = v^
+            imut(out_counts)[unsafe_offset=q] = Int64(length)
     _ = e_ids^
     _ = e_sc^
     _ = e_cnt^
-    if st != OK:
-        for q in range(ni):
-            counts[unsafe_offset=q] = 0
     return st
+
+
+def copy_main_rows(db: Db, rows: Int, dst_vec: Int, dst_tags: Int) -> Bool:
+    var eb = db.enc_bytes()
+    var e = 0
+    while e * db.extent_rows < rows:
+        var lo = e * db.extent_rows
+        var n = min(db.extent_rows, rows - lo)
+        if not db.rd(MAIN, db.vec_off(lo), dst_vec + lo * eb, n * eb) or not db.rd(MAIN, db.tag_off(lo), dst_tags + lo * 8, n * 8):
+            return False
+        e += 1
+    return True
+
+
+def search_cpu(h: Int, r: Int64, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int,
+               k: Int64, metric: Int32, nchunks: Int64, out_ids: Int, out_scores: Int, out_counts: Int) -> Int32:
+    var st = check_search(h, r, queries, nq, k, out_ids, out_scores, out_counts)
+    if st != OK:
+        return st
+    var v = make_view(dbp(h)[], Int(r))
+    st = search_rows(dbp(h)[], Int(r), v, 0, queries, nq, filter_on, filter_tags, k, metric, nchunks, out_ids, out_scores, out_counts)
+    _ = v^
+    if st != OK:
+        for q in range(Int(nq)):
+            imut(out_counts)[unsafe_offset=q] = 0
+    return st
+
+
+@export("veclite_reader_search")
+def veclite_reader_search(
+    h: Int, r: Int64, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int,
+    k: Int64, metric: Int32, nchunks: Int64, out_ids: Int, out_scores: Int, out_counts: Int,
+) abi("C") -> Int32:
+    return search_cpu(h, r, queries, nq, filter_on, filter_tags, k, metric, nchunks, out_ids, out_scores, out_counts)
 
 
 @export("veclite_info")
@@ -1090,7 +1131,7 @@ def veclite_info(h: Int, dst: Int) abi("C") -> Int32:
     if h == 0 or dst == 0:
         return E_NULL
     var db = dbp(h)
-    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype), db[].dim]
+    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype), db[].dim, db[].gpu_rows]
     for i in range(len(vals)):
         st64(dst + i * 8, UInt64(vals[i]))
     return OK

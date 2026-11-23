@@ -285,6 +285,11 @@ theorem gpu_chunks_correct (k : Nat) (p : α → Bool) (cs ord : List (List α))
   rw [e]
   exact topk_correct k p cs ord h
 
+theorem split_correct (k : Nat) (p : α → Bool) (gpuPart cpuPart : List α) :
+    mergeLocals k [scanChunk k p gpuPart, scanChunk k p cpuPart] = (isort ((gpuPart ++ cpuPart).filter p)).take k := by
+  have h := topk_correct k p [gpuPart, cpuPart] [gpuPart, cpuPart] (List.Perm.refl _)
+  simpa using h
+
 structure Cand where
   score : Int
   id : Nat
@@ -321,3 +326,4 @@ end TopK
 #print axioms TopK.batch_correct
 #print axioms TopK.selectMin_spec
 #print axioms TopK.gpu_chunks_correct
+#print axioms TopK.split_correct

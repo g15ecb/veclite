@@ -6,6 +6,7 @@ An embeddable, file-based vector database in the spirit of SQLite: exact nearest
 - **Batched and filtered.** Each call takes many queries, each with its own tag filter. Rows that don't match are skipped, not scored.
 - **Crash-safe single file + WAL.** SQLite-style write-ahead log with snapshot readers, checkpoints, and recovery from torn writes.
 - **float32 or float16 storage**, chosen per collection.
+- **GPU when it helps.** `device="auto"` (the default) sends large unfiltered batches to the GPU and everything else to the CPU, with the same exact results either way. `device="cpu"` or `"gpu"` forces one.
 - **Verified.** The algorithms are modelled in Quint and proved in Lean. The code is checked against those models with crash-simulation tests and deliberately broken builds (see [docs/DESIGN.md](docs/DESIGN.md)).
 
 ## Why
@@ -46,7 +47,8 @@ with veclite.open("docs.db") as db:
 
 ## Platforms and tests
 
-- **Linux** (arm64 and x86-64; glibc ≥ 2.34) and **macOS** (Apple silicon). The full suite passes on all three. x86-64 is tested under emulation in Docker. On macOS there are optional Apple GPU kernels; Linux builds are CPU-only.
+- **Linux** (arm64 and x86-64; glibc ≥ 2.34) and **macOS** (Apple silicon). The full suite passes on all three. x86-64 is tested under emulation in Docker.
+- GPU kernels run on Apple GPUs (Metal) today. Linux builds are CPU-only until the kernels are validated on NVIDIA/AMD; `device="auto"` just uses the CPU there.
 - `scripts/check.sh` runs the C and Python test suites and checks that every deliberately broken build is caught.
 - `scripts/check-linux.sh` runs the same suite in an Ubuntu 24.04 container.
 - `scripts/check-formal.sh` runs the Quint models and Lean proofs.
