@@ -47,8 +47,10 @@ static void stored_form(float *v) {
 }
 static int64_t tag_of(int64_t id) { return id % 5; }
 
+#define KEYSPACE 48
+
 typedef struct {
-    int64_t txn, id;
+    int64_t txn, id, key;
     int del;
 } op;
 
@@ -59,6 +61,7 @@ static int64_t written = 0, acked = 0;
 typedef struct {
     int64_t n;
     uint8_t live[MAXROWS];
+    int64_t key[MAXROWS];
 } state;
 
 static void state_at(int64_t m, state *s) {
@@ -68,9 +71,36 @@ static void state_at(int64_t m, state *s) {
         if (ops[i].del) s->live[ops[i].id] = 0;
         else {
             s->live[ops[i].id] = 1;
+            s->key[ops[i].id] = ops[i].key;
             if (ops[i].id + 1 > s->n) s->n = ops[i].id + 1;
         }
     }
+}
+
+static long key_checks = 0, dup_rejects = 0, key_reuses = 0;
+
+static int64_t live_row_with_key(const state *s, int64_t k) {
+    for (int64_t i = 0; i < s->n; i++)
+        if (s->live[i] && s->key[i] == k) return i;
+    return -1;
+}
+
+static void check_keys(int64_t db, const state *s, const char *ctx) {
+    static int64_t ids[MAXROWS], keys[MAXROWS];
+    for (int64_t k = 0; k < KEYSPACE; k++) {
+        int64_t want = live_row_with_key(s, k), got = -1;
+        int rc = veclite_key_lookup(db, k, &got);
+        key_checks++;
+        if (want < 0)
+            CHECK(rc == VECLITE_E_ID, "%s indexExact: key %lld should be free, lookup rc %d row %lld", ctx, (long long)k, rc, (long long)got);
+        else
+            CHECK(rc == VECLITE_OK && got == want, "%s indexExact: key %lld row %lld want %lld (rc %d)", ctx, (long long)k, (long long)got, (long long)want, rc);
+    }
+    for (int64_t i = 0; i < s->n; i++) ids[i] = i;
+    CHECK(veclite_row_keys(db, ids, s->n, keys) == VECLITE_OK, "%s row_keys rc", ctx);
+    for (int64_t i = 0; i < s->n; i++) CHECK(keys[i] == s->key[i], "%s row %lld key %lld want %lld", ctx, (long long)i, (long long)keys[i], (long long)s->key[i]);
+    ids[0] = s->n;
+    CHECK(veclite_row_keys(db, ids, 1, keys) == VECLITE_E_ID, "%s row_keys out of range", ctx);
 }
 
 static int cand_cmp(const void *a, const void *b) {
@@ -127,7 +157,7 @@ static void check_view(int64_t db, int64_t r, int64_t mark, const char *ctx) {
 typedef struct {
     int64_t sim, db;
     int64_t active[NREAD], mark[NREAD];
-    int64_t pend_id[64];
+    int64_t pend_id[64], pend_key[64];
     int pend_del[64], npend;
     state cur;
 } world;
@@ -157,6 +187,7 @@ static void reopen(world *w, const char *ctx) {
     for (int i = 0; i < NREAD; i++) w->active[i] = -1;
     w->npend = 0;
     state_at(written, &w->cur);
+    check_keys(w->db, &w->cur, "recovery");
     int64_t r;
     if (veclite_reader_begin(w->db, &r) == VECLITE_OK) {
         check_view(w->db, r, written, "recoveryAtomic");
@@ -177,32 +208,45 @@ static int run_workload(uint64_t seed, int steps) {
         if (below(5) == 0) veclite_sim_set_budget(w.sim, below(4) == 0 ? below(40) : below(4));
         int64_t act = below(100), rc = VECLITE_OK, id;
         if (act < 35 && w.cur.n + w.npend < MAXROWS - 1 && w.npend < 60) {
-            int64_t nid = w.cur.n;
+            int64_t nid = w.cur.n, key = below(KEYSPACE);
+            int dup = live_row_with_key(&w.cur, key) >= 0;
             vec_of(nid, v);
-            rc = veclite_append(w.db, v, tag_of(nid), &id);
-            CHECK(rc != VECLITE_OK || id == nid, "append id %lld want %lld", (long long)id, (long long)nid);
-            if (rc == VECLITE_OK) {
-                w.pend_id[w.npend] = nid;
-                w.pend_del[w.npend++] = 0;
-                w.cur.live[nid] = 1;
-                w.cur.n++;
+            rc = veclite_append_key(w.db, v, tag_of(nid), key, &id);
+            if (dup) {
+                CHECK(rc == VECLITE_E_DUP_KEY, "noDupAccepted: key %lld already live, rc %lld", (long long)key, (long long)rc);
+                dup_rejects++;
+                rc = VECLITE_OK;
+            } else {
+                CHECK(rc != VECLITE_OK || id == nid, "append id %lld want %lld", (long long)id, (long long)nid);
+                if (rc == VECLITE_OK) {
+                    for (int64_t i = 0; i < w.cur.n; i++) key_reuses += w.cur.key[i] == key;
+                    w.pend_id[w.npend] = nid;
+                    w.pend_key[w.npend] = key;
+                    w.pend_del[w.npend++] = 0;
+                    w.cur.live[nid] = 1;
+                    w.cur.key[nid] = key;
+                    w.cur.n++;
+                }
             }
         } else if (act < 50 && w.npend < 60) {
             int64_t cand = w.cur.n ? below(w.cur.n) : 0;
             if (w.cur.n && w.cur.live[cand]) {
-                rc = veclite_delete(w.db, cand);
+                rc = below(2) ? veclite_delete_key(w.db, w.cur.key[cand]) : veclite_delete(w.db, cand);
                 if (rc == VECLITE_OK) {
                     w.pend_id[w.npend] = cand;
+                    w.pend_key[w.npend] = w.cur.key[cand];
                     w.pend_del[w.npend++] = 1;
                     w.cur.live[cand] = 0;
                 }
             } else if (w.cur.n) {
                 CHECK(veclite_delete(w.db, cand) == VECLITE_E_ID, "delete dead row must fail");
+                int64_t k = below(KEYSPACE);
+                if (live_row_with_key(&w.cur, k) < 0) CHECK(veclite_delete_key(w.db, k) == VECLITE_E_ID, "delete free key must fail");
             }
         } else if (act < 68) {
             if (w.npend) {
                 written++;
-                for (int i = 0; i < w.npend; i++) ops[nops++] = (op){written, w.pend_id[i], w.pend_del[i]};
+                for (int i = 0; i < w.npend; i++) ops[nops++] = (op){written, w.pend_id[i], w.pend_key[i], w.pend_del[i]};
                 w.npend = 0;
             }
             int64_t txn = -1;
@@ -274,6 +318,7 @@ static int run_workload(uint64_t seed, int steps) {
         }
         CHECK(rc == VECLITE_OK, "step %d act %lld rc %lld", step, (long long)act, (long long)rc);
         veclite_sim_set_budget(w.sim, -1);
+        check_keys(w.db, &w.cur, "step");
         for (int i = 0; i < NREAD; i++)
             if (w.active[i] >= 0) {
                 int64_t mark = -1;
@@ -435,7 +480,7 @@ int main(int argc, char **argv) {
         run_workload((uint64_t)s, steps);
         if (failures) printf("failing seed %d\n", s);
     }
-    printf("store_test[dtype %d]: %d checks, %d failures | io_crashes %ld idle_crashes %ld restarts %ld wal_replay_over_ckpt %ld lost_unacked_txns %ld searches %ld rolled_back_ops %ld\n",
-           storage, checks, failures, io_crashes, idle_crashes, restarts, wal_over_ckpt, lost_unacked, searches, rollbacks);
+    printf("store_test[dtype %d]: %d checks, %d failures | io_crashes %ld idle_crashes %ld restarts %ld wal_replay_over_ckpt %ld lost_unacked_txns %ld searches %ld rolled_back_ops %ld key_checks %ld dup_rejects %ld key_reuses %ld\n",
+           storage, checks, failures, io_crashes, idle_crashes, restarts, wal_over_ckpt, lost_unacked, searches, rollbacks, key_checks, dup_rejects, key_reuses);
     return failures != 0;
 }

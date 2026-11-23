@@ -206,6 +206,27 @@ def device(rows):
     save(fig, "device_routing.png")
 
 
+def keys_plot(rows):
+    fig, axes = plt.subplots(1, 4, figsize=(19, 4.2))
+    for mode, color in (("row_ids", "C0"), ("keys", "C1")):
+        sub = sorted((r for r in rows if r["mode"] == mode), key=lambda r: r["n"])
+        n = [r["n"] for r in sub]
+        label = "no keys (row ids)" if mode == "row_ids" else "explicit 64-bit keys"
+        axes[0].plot(n, [r["add_rows_per_s"] for r in sub], "-o", color=color, label=label)
+        axes[1].plot(n, [r["open_checkpointed_s"] * 1e3 for r in sub], "-o", color=color, label=label)
+        axes[2].plot(n, [r["contains_us"] for r in sub], "-o", color=color, label=label)
+        axes[3].plot(n, [r["search_32_ms_per_q"] for r in sub], "-o", color=color, label=label)
+    axes[0].set(ylabel="rows / s", title="Durable add (one commit per call)")
+    axes[1].set(ylabel="ms", title="Open checkpointed file (index rebuild)")
+    axes[2].set(ylabel="us per lookup (Python)", title="key in db")
+    axes[3].set(ylabel="ms per query", title="Search, batch 32 (CPU)")
+    for ax in axes:
+        ax.set(xscale="log", xlabel=f"rows (dim {rows[0]['dim']})")
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=8)
+    save(fig, "keys_overhead.png")
+
+
 def formal(res):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     s = res["wal_samples"]
@@ -240,6 +261,8 @@ def main():
         gpu(r)
     if (r := load("device_sweep.json")) is not None:
         device(r)
+    if (r := load("keys_bench.json")) is not None:
+        keys_plot(r)
     if (r := load("formal_bench.json")) is not None:
         formal(r)
 

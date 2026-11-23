@@ -181,6 +181,49 @@ No Quint model is needed: the kernels are deterministic per chunk, and the merge
 - **Profile at batch 512, dim 1536:** scoring 179 ms, selection 22 ms, merge 8 ms, copies about 2 ms.
 - **Recommendation:** use the GPU only for large unfiltered batches (≥ 128 queries). Everything else stays on the CPU. For the batch path, the next step is simdgroup-matrix scoring, which should beat FAISS.
 
+## Keys
+
+- **What a key is:** each row carries a 64-bit key chosen by the caller. It defaults to the row id, so code that passes no keys behaves as before. Keys are unique among live rows; a deleted row's key can be used again.
+- **On disk:** a key column in each main-file extent (format version 3). The WAL record header carries the key at bytes 48–55, inside the chained checksum.
+- **In memory:** the writer keeps `row_key` (key for every row id) and a hash index from key to live row. It updates them at append, delete and rollback, and rebuilds the index from scratch at open: the main-file keys and live flags, then the replayed WAL, then the index derived from the result. A duplicate live key, or a WAL record whose key disagrees with the stored row, is treated as corruption.
+- **Readers** map result row ids to keys through `row_key`. A row's key never changes, so this is safe for any snapshot.
+- **C API:** `veclite_append_key`, `veclite_delete_key`, `veclite_key_lookup`, `veclite_row_keys`, and error `-26 duplicate key`.
+
+### Quint (`formal/keys.qnt`)
+
+The model covers adds with any key, deletes by key, commits, rollback to any savepoint, and crashes that keep the committed log and rebuild the index.
+
+| Property | Enforces | Why |
+|---|---|---|
+| `rowsMatchLog` | Writer rows equal a replay of the committed and staged operations | The in-memory state never drifts from the log. |
+| `indexExact` | The key index equals key → live row, derived from the rows | Lookups, deletes by key and duplicate checks are all correct. |
+| `uniqueLive` | No two live rows share a key | Keys identify documents. |
+| `noDupAccepted` | An add whose key is live (including staged rows) is never accepted | Duplicates are rejected, not silently stored. |
+| Witnesses: key reused after delete; duplicate rejected; rollbacks and crashes interleaved | Must be reachable | The interesting cases really occur in the runs. |
+| Mutants: rollback keeps the index; delete keeps the key; recovery ignores deletes; duplicate check sees only committed rows | Must fail | Each property catches its bug class. |
+
+### Tests
+
+- `store_test` gives each appended row a random key from 48 values, so duplicates and reuse are frequent. Deletes alternate between by-key and by-id.
+- After every step and every recovery, it checks all 48 keys with `veclite_key_lookup` against the model's live rows, and every row's key with `veclite_row_keys`. That's 2.9M key checks, 5,600 rejected duplicates and 2,300 key reuses across 300 seeds.
+- All four code mutants are caught on the first seed, each by the property its model counterpart violates.
+- `tests/python/test_keys.py` covers:
+  - the dict example from the README;
+  - default keys equal to row ids;
+  - duplicates within a batch, and against live rows (all-or-nothing);
+  - extreme 64-bit keys;
+  - key reuse surviving a checkpoint and a reopen;
+  - an unknown key in a delete batch;
+  - rollback restoring keys.
+
+### Cost of keys (dim 768; median of 5)
+
+![keys](../results/graphs/keys_overhead.png)
+
+- **None measurable.** Add throughput, opening a checkpointed file (including the index rebuild), and batch-32 search are within run-to-run noise with and without explicit keys.
+- **Opening rebuilds the index** in 0.3 ms at 10k rows and 20 ms at 500k rows.
+- **`key in db`** takes 1.5–4 µs from Python, mostly ctypes call overhead.
+
 ## Transactions and rollback
 
 - **Pending changes:** `add` and `delete` stage changes in memory, and `commit` writes them to the WAL as one transaction.

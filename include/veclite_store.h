@@ -11,6 +11,7 @@
 #define VECLITE_E_ID (-23)
 #define VECLITE_E_READER (-24)
 #define VECLITE_E_ARG (-25)
+#define VECLITE_E_DUP_KEY (-26)
 #define VECLITE_E_GPU (-30)
 #define VECLITE_E_NO_GPU (-31)
 
@@ -30,7 +31,11 @@ int32_t veclite_sim_crash_range(int64_t sim, int64_t wal_lo, int64_t wal_hi);
 int32_t veclite_open(const char *path, int64_t dim, int64_t extent_rows, int32_t storage, int64_t sim, int64_t *out_db);
 int32_t veclite_close(int64_t db);
 int32_t veclite_append(int64_t db, const float *vec, int64_t tag, int64_t *out_id);
+int32_t veclite_append_key(int64_t db, const float *vec, int64_t tag, int64_t key, int64_t *out_id);
 int32_t veclite_delete(int64_t db, int64_t id);
+int32_t veclite_delete_key(int64_t db, int64_t key);
+int32_t veclite_key_lookup(int64_t db, int64_t key, int64_t *out_id);
+int32_t veclite_row_keys(int64_t db, const int64_t *ids, int64_t n, int64_t *out_keys);
 int32_t veclite_commit(int64_t db, int64_t *out_txn);
 int32_t veclite_pending(int64_t db, int64_t *out_n);
 int32_t veclite_rollback(int64_t db, int64_t mark);

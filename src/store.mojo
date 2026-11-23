@@ -2,6 +2,7 @@ from std.ffi import external_call, c_int
 from std.sys import get_defined_bool, CompilationTarget
 from std.utils.numerics import isfinite
 from std.memory.alloc import unsafe_alloc
+from std.collections import Dict
 from kernel import veclite_scores, veclite_validate_rows, veclite_abi_version, OK, E_NULL, E_DIM, E_K, E_BATCH, E_DATA_NONFINITE, MAX_DIM, MAX_K, MAX_BATCH, bstep, veclite_search, fptr, fmut, iptr, imut, bptr
 
 comptime E_IO: Int32 = -20
@@ -10,6 +11,7 @@ comptime E_STATE: Int32 = -22
 comptime E_ID: Int32 = -23
 comptime E_READER: Int32 = -24
 comptime E_ARG: Int32 = -25
+comptime E_DUP_KEY: Int32 = -26
 comptime E_GPU: Int32 = -30
 comptime E_NO_GPU: Int32 = -31
 comptime DEV_AUTO: Int32 = 0
@@ -25,10 +27,14 @@ comptime MUTANT_UNSYNCED_RESTART_HDR = get_defined_bool["VECLITE_MUTANT_UNSYNCED
 comptime MUTANT_NO_RECOVERY_TRUNCATE = get_defined_bool["VECLITE_MUTANT_NO_RECOVERY_TRUNCATE"]()
 comptime MUTANT_ROLLBACK_KEEP_PENDING = get_defined_bool["VECLITE_MUTANT_ROLLBACK_KEEP_PENDING"]()
 comptime MUTANT_ROLLBACK_KEEP_ROWS = get_defined_bool["VECLITE_MUTANT_ROLLBACK_KEEP_ROWS"]()
+comptime MUTANT_ROLLBACK_KEEPS_INDEX = get_defined_bool["VECLITE_MUTANT_ROLLBACK_KEEPS_INDEX"]()
+comptime MUTANT_DELETE_KEEPS_KEY = get_defined_bool["VECLITE_MUTANT_DELETE_KEEPS_KEY"]()
+comptime MUTANT_RECOVERY_IGNORES_DELETES = get_defined_bool["VECLITE_MUTANT_RECOVERY_IGNORES_DELETES"]()
+comptime MUTANT_DUP_CHECK_COMMITTED_ONLY = get_defined_bool["VECLITE_MUTANT_DUP_CHECK_COMMITTED_ONLY"]()
 
 comptime MAIN_MAGIC: UInt64 = 0x314E49414D424456
 comptime WAL_MAGIC: UInt64 = 0x31304C4157424456
-comptime VERSION: UInt64 = 2
+comptime VERSION: UInt64 = 3
 comptime SLOT_BYTES = 4096
 comptime DATA_OFF = 2 * SLOT_BYTES
 comptime WAL_HDR = 64
@@ -260,6 +266,9 @@ struct Db(Movable):
     var gpu: Int
     var gpu_rows: Int
     var gpu_avail: Int
+    var row_key: List[Int64]
+    var kidx: Dict[Int, Int]
+    var p_appends: Int
 
     def frame_bytes(self) -> Int:
         return FRAME_HDR + self.dim * 4
@@ -271,7 +280,7 @@ struct Db(Movable):
         return self.dim * elem_bytes(self.dtype)
 
     def set_extent_bytes(mut self):
-        self.extent_bytes = ((self.extent_rows * (self.enc_bytes() + 9) + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
+        self.extent_bytes = ((self.extent_rows * (self.enc_bytes() + 17) + SLOT_BYTES - 1) // SLOT_BYTES) * SLOT_BYTES
 
     def vec_off(self, id: Int) -> Int:
         return self.row_off(id) + (id % self.extent_rows) * self.enc_bytes()
@@ -279,8 +288,11 @@ struct Db(Movable):
     def tag_off(self, id: Int) -> Int:
         return self.row_off(id) + self.extent_rows * self.enc_bytes() + (id % self.extent_rows) * 8
 
+    def key_off(self, id: Int) -> Int:
+        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + 8) + (id % self.extent_rows) * 8
+
     def live_off(self, id: Int) -> Int:
-        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + 8) + (id % self.extent_rows)
+        return self.row_off(id) + self.extent_rows * (self.enc_bytes() + 16) + (id % self.extent_rows)
 
     def format_word(self) -> UInt64:
         return VERSION | (UInt64(Int(self.dtype)) << 16) | (UInt64(self.dim) << 32)
@@ -443,21 +455,40 @@ struct Db(Movable):
         self.chain_tail = chain
         return OK
 
-    def encode_frame(self, a: Int, txn: Int, kind: UInt64, commit: Bool, id: Int, tag: Int64, vec: Int, prev: UInt64) -> UInt64:
+    def encode_frame(self, a: Int, txn: Int, kind: UInt64, commit: Bool, id: Int, tag: Int64, key: Int64, vec: Int, prev: UInt64) -> UInt64:
         zero_bytes(a, FRAME_HDR)
         st64(a, UInt64(txn))
         st64(a + 8, kind | (UInt64(1 if commit else 0) << 32))
         st64(a + 16, UInt64(id))
         st64(a + 24, UInt64(tag))
         st64(a + 32, self.salt)
+        st64(a + 48, UInt64(key))
         if kind == APPEND:
             copy_bytes(a + FRAME_HDR, vec, self.dim * 4)
         else:
             zero_bytes(a + FRAME_HDR, self.dim * 4)
         var h = seed_of(self.salt) if MUTANT_NO_CHAIN else prev
-        var c = hash_bytes(hash_bytes(h, a, 40), a + FRAME_HDR, self.dim * 4)
+        var c = frame_hash(h, a, self.dim)
         st64(a + 40, c)
         return c
+
+
+def frame_hash(h: UInt64, a: Int, dim: Int) -> UInt64:
+    return hash_bytes(hash_bytes(hash_bytes(h, a, 40), a + 48, 8), a + FRAME_HDR, dim * 4)
+
+
+def build_index(mut db: Db) -> Int32:
+    db.kidx = Dict[Int, Int]()
+    for i in range(db.rows):
+        comptime if not MUTANT_RECOVERY_IGNORES_DELETES:
+            if db.live[i] == 0:
+                continue
+        var k = Int(db.row_key[i])
+        var prior = db.kidx.get(k)
+        if db.live[i] == 1 and prior and db.live[prior.value()] == 1:
+            return E_CORRUPT
+        db.kidx[k] = i
+    return OK
 
 
 def row_ok(vec: Int, dim: Int) -> Bool:
@@ -614,6 +645,13 @@ def load_live(mut db: Db) -> Int32:
     for i in range(db.rows):
         if db.live[i] > 1:
             return E_CORRUPT
+    db.row_key = List[Int64](length=db.rows, fill=0)
+    e = 0
+    while e * db.extent_rows < db.rows:
+        var n = min(db.extent_rows, db.rows - e * db.extent_rows)
+        if not db.rd(MAIN, db.key_off(e * db.extent_rows), Int(db.row_key.unsafe_ptr()) + e * db.extent_rows * 8, n * 8):
+            return E_IO
+        e += 1
     return OK
 
 
@@ -643,7 +681,7 @@ def recover_wal(mut db: Db) -> Int32:
             return E_IO
         db.salt_synced = True
         db.published = db.ntx
-        return OK
+        return build_index(db)
     db.salt_synced = True
     var fs = db.frame_bytes()
     var nslots = (size - WAL_HDR) // fs if size > WAL_HDR else 0
@@ -657,7 +695,7 @@ def recover_wal(mut db: Db) -> Int32:
         if not db.rd(WALF, WAL_HDR + i * fs, fa, fs):
             return E_IO
         var h = seed_of(db.salt) if MUTANT_NO_CHAIN else prev
-        if ld64(fa + 32) != db.salt or ld64(fa + 40) != hash_bytes(hash_bytes(h, fa, 40), fa + FRAME_HDR, db.dim * 4):
+        if ld64(fa + 32) != db.salt or ld64(fa + 40) != frame_hash(h, fa, db.dim):
             break
         prev = ld64(fa + 40)
         chains.append(prev)
@@ -673,6 +711,7 @@ def recover_wal(mut db: Db) -> Int32:
         var commit = ld64(fa + 8) >> 32
         var id = Int(ld64(fa + 16))
         var tag = Int64(ld64(fa + 24))
+        var key = Int64(ld64(fa + 48))
         if (kind != APPEND and kind != DELETE) or commit > 1 or txn < 1 or (expect_txn >= 0 and txn != expect_txn):
             return E_CORRUPT
         expect_txn = txn + 1 if commit == 1 else txn
@@ -680,14 +719,15 @@ def recover_wal(mut db: Db) -> Int32:
             if id > db.rows or id < 0 or not row_ok(fa + FRAME_HDR, db.dim):
                 return E_CORRUPT
             if id < db.rows:
-                if id >= db.main_rows or not same_as_main(db, id, fa + FRAME_HDR):
+                if id >= db.main_rows or not same_as_main(db, id, fa + FRAME_HDR) or db.row_key[id] != key:
                     return E_CORRUPT
                 db.live[id] = 1
             else:
                 db.rows += 1
                 db.live.append(1)
+                db.row_key.append(key)
         else:
-            if id < 0 or id >= db.rows:
+            if id < 0 or id >= db.rows or db.row_key[id] != key:
                 return E_CORRUPT
             db.live[id] = 0
         if db.index_frame(txn, kind, id, tag, fa + FRAME_HDR, chains[i]) != OK:
@@ -703,7 +743,7 @@ def recover_wal(mut db: Db) -> Int32:
         db.chain_tail = seed_of(db.salt)
     db.published = db.ntx
     db.pub_slot = last + 1
-    return OK
+    return build_index(db)
 
 
 @export("veclite_open")
@@ -730,7 +770,7 @@ def veclite_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim:
         List[UInt8](),
         0, 0, 0, 0, List[UInt8](), List[UInt64](), List[Int](), List[Int64](), List[Float32](),
         List[Bool](length=MAX_READERS, fill=False), List[Int](length=MAX_READERS, fill=0),
-        List[UInt64](length=MAX_READERS, fill=0), List[Int](length=MAX_READERS, fill=0), False, 0, 0, 0, 0, 0,
+        List[UInt64](length=MAX_READERS, fill=0), List[Int](length=MAX_READERS, fill=0), False, 0, 0, 0, 0, 0, List[Int64](), Dict[Int, Int](), 0,
     )
     var st = load_main(db, Int(dim), Int(extent_rows), storage)
     if st == OK:
@@ -765,20 +805,27 @@ def close_db(h: Int) -> Int32:
     return OK
 
 
-@export("veclite_append")
-def veclite_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
+def append_impl(h: Int, vec: Int, tag: Int64, key: Int64, use_key: Bool, out_id: Int) -> Int32:
     var st = usable(h)
     if st != OK:
         return st
     if vec == 0 or out_id == 0:
         return E_NULL
     var db = dbp(h)
+    var id = db[].rows
+    var k = key if use_key else Int64(id)
+    var hit = db[].kidx.get(Int(k))
+    if hit:
+        comptime if MUTANT_DUP_CHECK_COMMITTED_ONLY:
+            if hit.value() < db[].rows - db[].p_appends:
+                return E_DUP_KEY
+        else:
+            return E_DUP_KEY
     var enc = List[UInt8](length=db[].enc_bytes(), fill=0)
     st = encode_row(db[].dtype, fptr(vec), db[].dim, Int(enc.unsafe_ptr()))
     _ = enc^
     if st != OK:
         return st
-    var id = db[].rows
     var at = len(db[].p_vec)
     db[].p_vec.resize(at + db[].dim, 0)
     copy_bytes(Int(db[].p_vec.unsafe_ptr()) + at * 4, vec, db[].dim * 4)
@@ -786,9 +833,22 @@ def veclite_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
     db[].p_id.append(id)
     db[].p_tag.append(tag)
     db[].rows += 1
+    db[].p_appends += 1
     db[].live.append(1)
+    db[].row_key.append(k)
+    db[].kidx[Int(k)] = id
     st64(out_id, UInt64(id))
     return OK
+
+
+@export("veclite_append")
+def veclite_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
+    return append_impl(h, vec, tag, 0, False, out_id)
+
+
+@export("veclite_append_key")
+def veclite_append_key(h: Int, vec: Int, tag: Int64, key: Int64, out_id: Int) abi("C") -> Int32:
+    return append_impl(h, vec, tag, key, True, out_id)
 
 
 @export("veclite_delete")
@@ -803,6 +863,54 @@ def veclite_delete(h: Int, id: Int64) abi("C") -> Int32:
     db[].p_id.append(Int(id))
     db[].p_tag.append(0)
     db[].live[Int(id)] = 0
+    comptime if not MUTANT_DELETE_KEEPS_KEY:
+        try:
+            _ = db[].kidx.pop(Int(db[].row_key[Int(id)]))
+        except:
+            pass
+    return OK
+
+
+@export("veclite_delete_key")
+def veclite_delete_key(h: Int, key: Int64) abi("C") -> Int32:
+    var st = usable(h)
+    if st != OK:
+        return st
+    var hit = dbp(h)[].kidx.get(Int(key))
+    if not hit or dbp(h)[].live[hit.value()] == 0:
+        return E_ID
+    return veclite_delete(h, Int64(hit.value()))
+
+
+@export("veclite_key_lookup")
+def veclite_key_lookup(h: Int, key: Int64, out_id: Int) abi("C") -> Int32:
+    var st = usable(h)
+    if st != OK:
+        return st
+    if out_id == 0:
+        return E_NULL
+    var hit = dbp(h)[].kidx.get(Int(key))
+    if not hit:
+        return E_ID
+    st64(out_id, UInt64(hit.value()))
+    return OK
+
+
+@export("veclite_row_keys")
+def veclite_row_keys(h: Int, ids: Int, n: Int64, out_keys: Int) abi("C") -> Int32:
+    var st = usable(h)
+    if st != OK:
+        return st
+    if n < 0:
+        return E_ARG
+    if n > 0 and (ids == 0 or out_keys == 0):
+        return E_NULL
+    var db = dbp(h)
+    for i in range(Int(n)):
+        var id = Int(iptr(ids)[unsafe_offset=i])
+        if id < 0 or id >= db[].rows:
+            return E_ID
+        imut(out_keys)[unsafe_offset=i] = db[].row_key[id]
     return OK
 
 
@@ -830,10 +938,20 @@ def veclite_rollback(h: Int, mark: Int64) abi("C") -> Int32:
         var kind = db[].p_kind.pop()
         var id = db[].p_id.pop()
         _ = db[].p_tag.pop()
+        comptime if not MUTANT_ROLLBACK_KEEPS_INDEX:
+            if kind == APPEND:
+                try:
+                    _ = db[].kidx.pop(Int(db[].row_key[id]))
+                except:
+                    pass
+            else:
+                db[].kidx[Int(db[].row_key[id])] = id
         comptime if not MUTANT_ROLLBACK_KEEP_ROWS:
             if kind == APPEND:
                 db[].rows -= 1
+                db[].p_appends -= 1
                 _ = db[].live.pop()
+                _ = db[].row_key.pop()
                 db[].p_vec.resize(len(db[].p_vec) - db[].dim, 0)
             else:
                 db[].live[id] = 1
@@ -870,7 +988,7 @@ def veclite_commit(h: Int, out_txn: Int) abi("C") -> Int32:
     var vi = 0
     for j in range(n):
         var vec = Int(db[].p_vec.unsafe_ptr()) + vi * db[].dim * 4
-        prev = db[].encode_frame(base + j * fs, txn, db[].p_kind[j], j == n - 1, db[].p_id[j], db[].p_tag[j], vec, prev)
+        prev = db[].encode_frame(base + j * fs, txn, db[].p_kind[j], j == n - 1, db[].p_id[j], db[].p_tag[j], db[].row_key[db[].p_id[j]], vec, prev)
         chains.append(prev)
         if db[].p_kind[j] == APPEND:
             vi += 1
@@ -885,6 +1003,7 @@ def veclite_commit(h: Int, out_txn: Int) abi("C") -> Int32:
     db[].p_id.clear()
     db[].p_tag.clear()
     db[].p_vec.clear()
+    db[].p_appends = 0
     comptime if not MUTANT_ACK_BEFORE_SYNC:
         if not db[].sync(WALF):
             return E_IO
@@ -918,6 +1037,7 @@ def veclite_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
         var one = List[UInt8](length=1, fill=1)
         var zero = List[UInt8](length=1, fill=0)
         var tagb = List[Int64](length=1, fill=0)
+        var keyb = List[Int64](length=1, fill=0)
         var rows = db[].main_rows
         for i in range(len(db[].f_txn)):
             var t = db[].f_txn[i]
@@ -931,6 +1051,9 @@ def veclite_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
                     return E_IO
                 if not db[].wr(MAIN, db[].tag_off(id), Int(tagb.unsafe_ptr()), 8):
                     return E_IO
+                keyb[0] = db[].row_key[id]
+                if not db[].wr(MAIN, db[].key_off(id), Int(keyb.unsafe_ptr()), 8):
+                    return E_IO
                 if not db[].wr(MAIN, db[].live_off(id), Int(one.unsafe_ptr()), 1):
                     return E_IO
                 rows = max(rows, id + 1)
@@ -940,6 +1063,7 @@ def veclite_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
         _ = one^
         _ = zero^
         _ = tagb^
+        _ = keyb^
         comptime if not MUTANT_SKIP_DATA_SYNC:
             if not db[].sync(MAIN):
                 return E_IO

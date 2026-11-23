@@ -1,0 +1,90 @@
+[
+ {
+  "n": 10000,
+  "dim": 768,
+  "mode": "row_ids",
+  "add_rows_per_s": 138459.00823439562,
+  "open_checkpointed_s": 0.00033404200803488493,
+  "recover_wal_rows": 10000,
+  "recover_wal_s": 0.04202695901039988,
+  "contains_us": 1.4920409303158522,
+  "search_32_ms_per_q": 0.05695049912901595
+ },
+ {
+  "n": 10000,
+  "dim": 768,
+  "mode": "keys",
+  "add_rows_per_s": 169817.12803817683,
+  "open_checkpointed_s": 0.000325749977491796,
+  "recover_wal_rows": 10000,
+  "recover_wal_s": 0.07422137504909188,
+  "contains_us": 1.5034169191494584,
+  "search_32_ms_per_q": 0.04179949974059127
+ },
+ {
+  "n": 50000,
+  "dim": 768,
+  "mode": "row_ids",
+  "add_rows_per_s": 136417.66062582994,
+  "open_checkpointed_s": 0.0012362919514998794,
+  "recover_wal_rows": 20000,
+  "recover_wal_s": 0.08390237507410347,
+  "contains_us": 1.555000082589686,
+  "search_32_ms_per_q": 0.20298437448218465
+ },
+ {
+  "n": 50000,
+  "dim": 768,
+  "mode": "keys",
+  "add_rows_per_s": 130770.15117935301,
+  "open_checkpointed_s": 0.001185416942462325,
+  "recover_wal_rows": 20000,
+  "recover_wal_s": 0.08467274997383356,
+  "contains_us": 1.5089999651536345,
+  "search_32_ms_per_q": 0.18792318951454945
+ },
+ {
+  "n": 200000,
+  "dim": 768,
+  "mode": "row_ids",
+  "add_rows_per_s": 103373.78211367014,
+  "open_checkpointed_s": 0.005136875086463988,
+  "recover_wal_rows": 20000,
+  "recover_wal_s": 0.0918968329206109,
+  "contains_us": 2.446791040711105,
+  "search_32_ms_per_q": 0.8066236878221389
+ },
+ {
+  "n": 200000,
+  "dim": 768,
+  "mode": "keys",
+  "add_rows_per_s": 146494.7693311343,
+  "open_checkpointed_s": 0.005341290961951017,
+  "recover_wal_rows": 20000,
+  "recover_wal_s": 0.0855452079558745,
+  "contains_us": 4.207042045891285,
+  "search_32_ms_per_q": 0.8471914079564158
+ },
+ {
+  "n": 500000,
+  "dim": 768,
+  "mode": "row_ids",
+  "add_rows_per_s": 75717.7211846168,
+  "open_checkpointed_s": 0.020662583061493933,
+  "recover_wal_rows": 20000,
+  "recover_wal_s": 0.09467599994968623,
+  "contains_us": 4.132000030949712,
+  "search_32_ms_per_q": 1.9255546867498197
+ },
+ {
+  "n": 500000,
+  "dim": 768,
+  "mode": "keys",
+  "add_rows_per_s": 85429.97294383831,
+  "open_checkpointed_s": 0.019178709015250206,
+  "recover_wal_rows": 20000,
+  "recover_wal_s": 0.08312095899600536,
+  "contains_us": 4.13804198615253,
+  "search_32_ms_per_q": 1.8828606589522678
+ }
+]

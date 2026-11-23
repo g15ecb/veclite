@@ -16,7 +16,7 @@ ERRORS = {
     -6: "size overflow", -7: "query has NaN/inf", -8: "score is NaN/inf", -9: "zero query for cosine",
     -10: "bad chunk count", -11: "bad filter", -12: "vector has NaN/inf", -13: "zero vector", -14: "bad batch size",
     -15: "bad or mismatched storage type", -16: "value out of float16 range", -20: "I/O error", -21: "corrupt file",
-    -22: "invalid state", -23: "unknown or deleted row id", -24: "reader error", -25: "bad argument",
+    -22: "invalid state", -23: "unknown or deleted key", -24: "reader error", -25: "bad argument", -26: "duplicate key",
     -30: "GPU error", -31: "no usable GPU",
 }
 METRICS = {"l2": 0, "dot": 1, "cosine": 2}
@@ -51,7 +51,9 @@ def _load():
         raise OSError(f"{name} not found; build it with scripts/build.sh or set VECLITE_LIB")
     sigs = {
         "veclite_open": [ctypes.c_char_p, _I, _I, _I32, _I, _P], "veclite_close": [_I],
-        "veclite_append": [_I, _P, _I, _P], "veclite_delete": [_I, _I], "veclite_commit": [_I, _P],
+        "veclite_append": [_I, _P, _I, _P], "veclite_append_key": [_I, _P, _I, _I, _P], "veclite_delete": [_I, _I],
+        "veclite_delete_key": [_I, _I], "veclite_key_lookup": [_I, _I, _P], "veclite_row_keys": [_I, _P, _I, _P],
+        "veclite_commit": [_I, _P],
         "veclite_pending": [_I, _P], "veclite_rollback": [_I, _I],
         "veclite_checkpoint": [_I, _P], "veclite_reader_begin": [_I, _P], "veclite_reader_end": [_I, _I],
         "veclite_reader_search_dev": [_I, _I, _P, _I, _P, _P, _I, _I32, _I, _I32, _I, _P, _P, _P, _P],
@@ -135,6 +137,14 @@ class Database:
     def __len__(self) -> int:
         return self.info()["live_rows"]
 
+    def __contains__(self, key: int) -> bool:
+        out = np.zeros(1, dtype=np.int64)
+        with self._lock:
+            rc = _lib().veclite_key_lookup(self._handle(), int(key), _ptr(out))
+        if rc not in (0, -23):
+            _check(rc, "contains")
+        return rc == 0
+
     def close(self) -> None:
         with self._lock:
             if self._h:
@@ -159,7 +169,8 @@ class Database:
         with self._lock:
             self._rollback_to(0)
 
-    def add(self, vectors, tags: Optional[Sequence[int]] = None, commit: bool = True) -> np.ndarray:
+    def add(self, vectors, tags: Optional[Sequence[int]] = None, keys: Optional[Sequence[int]] = None,
+            commit: bool = True) -> np.ndarray:
         v = np.ascontiguousarray(vectors, dtype=np.float32)
         if v.ndim == 1:
             v = v[None, :]
@@ -168,6 +179,14 @@ class Database:
         t = np.zeros(len(v), dtype=np.int64) if tags is None else np.asarray(tags, dtype=np.int64).reshape(-1)
         if len(t) != len(v):
             raise ValueError(f"need one tag per vector: {len(t)} tags for {len(v)} vectors")
+        k = None if keys is None else np.asarray(keys, dtype=np.int64).reshape(-1)
+        if k is not None:
+            if len(k) != len(v):
+                raise ValueError(f"need one key per vector: {len(k)} keys for {len(v)} vectors")
+            uniq, first = np.unique(k, return_index=True)
+            if len(uniq) != len(k):
+                dup = int(np.setdiff1d(np.arange(len(k)), first)[0])
+                raise VecliteError(-26, "add", dup)
         bad = np.flatnonzero(~np.isfinite(v).all(axis=1))
         if bad.size:
             raise VecliteError(-12, "add", int(bad[0]))
@@ -183,23 +202,26 @@ class Database:
             mark = self._pending()
             try:
                 for i in range(len(v)):
-                    _check(_lib().veclite_append(h, v.ctypes.data + i * stride, int(t[i]), _ptr(out)), "add", i)
+                    addr = v.ctypes.data + i * stride
+                    rc = (_lib().veclite_append(h, addr, int(t[i]), _ptr(out)) if k is None
+                          else _lib().veclite_append_key(h, addr, int(t[i]), int(k[i]), _ptr(out)))
+                    _check(rc, "add", i)
                     ids[i] = out[0]
                 if commit:
                     self.commit()
             except BaseException:
                 self._rollback_to(mark)
                 raise
-        return ids
+        return ids if k is None else k.copy()
 
-    def delete(self, row_ids: Union[int, Sequence[int]], commit: bool = True) -> None:
-        ids = np.atleast_1d(np.asarray(row_ids, dtype=np.int64))
+    def delete(self, keys: Union[int, Sequence[int]], commit: bool = True) -> None:
+        ks = np.atleast_1d(np.asarray(keys, dtype=np.int64))
         with self._lock:
             h = self._handle()
             mark = self._pending()
             try:
-                for i, rid in enumerate(ids):
-                    _check(_lib().veclite_delete(h, int(rid)), "delete", i)
+                for i, key in enumerate(ks):
+                    _check(_lib().veclite_delete_key(h, int(key)), "delete", i)
                 if commit:
                     self.commit()
             except BaseException:
@@ -254,7 +276,13 @@ class Database:
             finally:
                 _lib().veclite_reader_end(h, int(r[0]))
             self.last_device = "gpu" if used[0] else "cpu"
-        hits = [(ids[i, : cnt[i]].copy(), sc[i, : cnt[i]].copy()) for i in range(nq)]
+            flat = np.ascontiguousarray(np.concatenate([ids[i, : cnt[i]] for i in range(nq)]))
+            keys = np.empty(len(flat), dtype=np.int64)
+            _check(_lib().veclite_row_keys(h, _ptr(flat), len(flat), _ptr(keys)), "search")
+        hits, at = [], 0
+        for i in range(nq):
+            hits.append((keys[at : at + cnt[i]].copy(), sc[i, : cnt[i]].copy()))
+            at += int(cnt[i])
         return hits[0] if single else hits
 
 
