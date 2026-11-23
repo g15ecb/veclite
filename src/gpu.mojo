@@ -5,7 +5,7 @@ from max.gpu.primitives import warp
 from std.memory import unsafe_stack_allocation
 from std.memory.alloc import unsafe_alloc
 from std.sys import size_of, get_defined_int
-from vdb import OK, E_NULL, E_K, E_SCORE_NONFINITE, E_FILTER, MAX_K, F16, cand_le, bstep, check_shape, check_metric, check_batch, check_dtype, query_norms, sqnorm, finish, elem_bytes, fptr, fmut, iptr, imut, bptr, L2, DOT, COSINE, MUTANT_POST_FILTER, MUTANT_LOCAL_K_MINUS_ONE
+from kernel import OK, E_NULL, E_K, E_SCORE_NONFINITE, E_FILTER, MAX_K, F16, cand_le, bstep, check_shape, check_metric, check_batch, check_dtype, query_norms, sqnorm, finish, elem_bytes, fptr, fmut, iptr, imut, bptr, L2, DOT, COSINE, MUTANT_POST_FILTER, MUTANT_LOCAL_K_MINUS_ONE
 
 comptime E_GPU: Int32 = -30
 comptime LANES = 32
@@ -284,8 +284,8 @@ def gpu_open_impl(data: Int, dtype: Int32, n: Int, dim: Int, tags: Int, live: In
     return OK
 
 
-@export("vdb_gpu_open")
-def vdb_gpu_open(data: Int, dtype: Int32, n: Int64, dim: Int64, tags: Int, live: Int, out_h: Int) abi("C") -> Int32:
+@export("veclite_gpu_open")
+def veclite_gpu_open(data: Int, dtype: Int32, n: Int64, dim: Int64, tags: Int, live: Int, out_h: Int) abi("C") -> Int32:
     if out_h == 0:
         return E_NULL
     st64(out_h, 0)
@@ -302,8 +302,8 @@ def vdb_gpu_open(data: Int, dtype: Int32, n: Int64, dim: Int64, tags: Int, live:
         return E_GPU
 
 
-@export("vdb_gpu_update")
-def vdb_gpu_update(h: Int, tags: Int, live: Int) abi("C") -> Int32:
+@export("veclite_gpu_update")
+def veclite_gpu_update(h: Int, tags: Int, live: Int) abi("C") -> Int32:
     if h == 0 or tags == 0 or live == 0:
         return E_NULL
     try:
@@ -314,8 +314,8 @@ def vdb_gpu_update(h: Int, tags: Int, live: Int) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_gpu_close")
-def vdb_gpu_close(h: Int) abi("C") -> Int32:
+@export("veclite_gpu_close")
+def veclite_gpu_close(h: Int) abi("C") -> Int32:
     if h == 0:
         return E_NULL
     var p = gp(h)
@@ -324,8 +324,8 @@ def vdb_gpu_close(h: Int) abi("C") -> Int32:
     return OK
 
 
-comptime CFG_SMALL = get_defined_int["VDB_GPU_SMALL", 0]()
-comptime CFG_LARGE = get_defined_int["VDB_GPU_LARGE", 1]()
+comptime CFG_SMALL = get_defined_int["VECLITE_GPU_SMALL", 0]()
+comptime CFG_LARGE = get_defined_int["VECLITE_GPU_LARGE", 1]()
 
 
 def gemm[metric: Int32, D: DType, BM: Int, BN: Int, RM: Int, RN: Int, BK: Int](
@@ -452,8 +452,8 @@ def gpu_search_impl(
     return st
 
 
-@export("vdb_gpu_search")
-def vdb_gpu_search(
+@export("veclite_gpu_search")
+def veclite_gpu_search(
     h: Int, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int,
     k: Int64, metric: Int32, out_ids: Int, out_scores: Int, out_counts: Int, out_full: Int,
 ) abi("C") -> Int32:

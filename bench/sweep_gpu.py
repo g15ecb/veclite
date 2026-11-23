@@ -12,11 +12,11 @@ from sweep_dtype import embeddings
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 I, I32, P = ctypes.c_int64, ctypes.c_int32, ctypes.c_void_p
-LIB.vdb_gpu_open.argtypes = [P, I32, I, I, P, P, P]
-LIB.vdb_gpu_update.argtypes = [I, P, P]
-LIB.vdb_gpu_close.argtypes = [I]
-LIB.vdb_gpu_search.argtypes = [I, P, I, P, P, I, I32, P, P, P, P]
-for fn in (LIB.vdb_gpu_open, LIB.vdb_gpu_update, LIB.vdb_gpu_close, LIB.vdb_gpu_search):
+LIB.veclite_gpu_open.argtypes = [P, I32, I, I, P, P, P]
+LIB.veclite_gpu_update.argtypes = [I, P, P]
+LIB.veclite_gpu_close.argtypes = [I]
+LIB.veclite_gpu_search.argtypes = [I, P, I, P, P, I, I32, P, P, P, P]
+for fn in (LIB.veclite_gpu_open, LIB.veclite_gpu_update, LIB.veclite_gpu_close, LIB.veclite_gpu_search):
     fn.restype = I32
 
 
@@ -28,11 +28,11 @@ class GpuTable:
     def __init__(self, table):
         self.t = table
         out = np.zeros(1, dtype=np.int64)
-        check(LIB.vdb_gpu_open(table.enc.ctypes.data, table.dt, *table.data.shape, addr(table.tags), addr(table.live), addr(out)), "gpu_open")
+        check(LIB.veclite_gpu_open(table.enc.ctypes.data, table.dt, *table.data.shape, addr(table.tags), addr(table.live), addr(out)), "gpu_open")
         self.h = int(out[0])
 
     def close(self):
-        check(LIB.vdb_gpu_close(self.h), "gpu_close")
+        check(LIB.veclite_gpu_close(self.h), "gpu_close")
 
     def search(self, qs, k, filter_tags=None):
         qs = np.ascontiguousarray(qs, dtype=np.float32)
@@ -44,7 +44,7 @@ class GpuTable:
         ids = np.empty((nq, k), dtype=np.int64)
         sc = np.empty((nq, k), dtype=np.float32)
         cnt = np.zeros(nq, dtype=np.int64)
-        check(LIB.vdb_gpu_search(self.h, addr(qs), nq, addr(fo), addr(ft), k, self.t.metric, addr(ids), addr(sc), addr(cnt), None), "gpu_search")
+        check(LIB.veclite_gpu_search(self.h, addr(qs), nq, addr(fo), addr(ft), k, self.t.metric, addr(ids), addr(sc), addr(cnt), None), "gpu_search")
         return [(ids[q, : cnt[q]], sc[q, : cnt[q]]) for q in range(nq)]
 
 

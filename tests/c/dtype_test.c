@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "vdb.h"
+#include "veclite.h"
 
 static int failures = 0, checks = 0;
 
@@ -47,22 +47,22 @@ static void test_encode_validation(void) {
     _Float16 h[8];
     float f[8];
     int64_t bad = 0;
-    CHECK(vdb_encode(2, x, 2, 4, h, &bad) == VDB_E_DTYPE, "int8 removed");
-    CHECK(vdb_encode(-1, x, 2, 4, h, &bad) == VDB_E_DTYPE, "neg dtype");
-    CHECK(vdb_encode(VDB_F16, x, 2, 4, NULL, &bad) == VDB_E_NULL, "null dst");
-    CHECK(vdb_encode(VDB_F16, x, 2, 4, h, NULL) == VDB_E_NULL, "null bad_row");
-    CHECK(vdb_encode(VDB_F16, NULL, 2, 4, h, &bad) == VDB_E_NULL, "null src");
-    CHECK(vdb_encode(VDB_F16, x, 2, 0, h, &bad) == VDB_E_DIM, "dim 0");
-    CHECK(vdb_encode(VDB_F16, x, -1, 4, h, &bad) == VDB_E_N, "neg n");
-    CHECK(vdb_encode(VDB_F16, big, 1, 4, h, &bad) == VDB_E_RANGE && bad == 0, "f16 range +");
-    CHECK(vdb_encode(VDB_F16, neg, 1, 4, h, &bad) == VDB_E_RANGE && bad == 0, "f16 range -");
-    CHECK(vdb_encode(VDB_F16, nanv, 1, 4, h, &bad) == VDB_E_DATA_NONFINITE && bad == 0, "f16 nan");
-    CHECK(vdb_encode(VDB_F16, edge, 1, 4, h, &bad) == VDB_OK && (float)h[0] == 65504.0f && (float)h[1] == -65504.0f, "f16 max ok");
-    CHECK(vdb_encode(VDB_F32, x, 2, 4, f, &bad) == VDB_OK && memcmp(f, x, sizeof f) == 0 && bad == -1, "f32 copy");
+    CHECK(veclite_encode(2, x, 2, 4, h, &bad) == VECLITE_E_DTYPE, "int8 removed");
+    CHECK(veclite_encode(-1, x, 2, 4, h, &bad) == VECLITE_E_DTYPE, "neg dtype");
+    CHECK(veclite_encode(VECLITE_F16, x, 2, 4, NULL, &bad) == VECLITE_E_NULL, "null dst");
+    CHECK(veclite_encode(VECLITE_F16, x, 2, 4, h, NULL) == VECLITE_E_NULL, "null bad_row");
+    CHECK(veclite_encode(VECLITE_F16, NULL, 2, 4, h, &bad) == VECLITE_E_NULL, "null src");
+    CHECK(veclite_encode(VECLITE_F16, x, 2, 0, h, &bad) == VECLITE_E_DIM, "dim 0");
+    CHECK(veclite_encode(VECLITE_F16, x, -1, 4, h, &bad) == VECLITE_E_N, "neg n");
+    CHECK(veclite_encode(VECLITE_F16, big, 1, 4, h, &bad) == VECLITE_E_RANGE && bad == 0, "f16 range +");
+    CHECK(veclite_encode(VECLITE_F16, neg, 1, 4, h, &bad) == VECLITE_E_RANGE && bad == 0, "f16 range -");
+    CHECK(veclite_encode(VECLITE_F16, nanv, 1, 4, h, &bad) == VECLITE_E_DATA_NONFINITE && bad == 0, "f16 nan");
+    CHECK(veclite_encode(VECLITE_F16, edge, 1, 4, h, &bad) == VECLITE_OK && (float)h[0] == 65504.0f && (float)h[1] == -65504.0f, "f16 max ok");
+    CHECK(veclite_encode(VECLITE_F32, x, 2, 4, f, &bad) == VECLITE_OK && memcmp(f, x, sizeof f) == 0 && bad == -1, "f32 copy");
     float q[4] = {1, 0, 0, 0}, sc[1];
     int64_t ids[1], cnt[1];
     uint8_t live[2] = {1, 1};
-    CHECK(vdb_search_ex(h, 2, 2, 4, NULL, live, q, 1, NULL, NULL, 1, 0, 1, ids, sc, cnt) == VDB_E_DTYPE, "search int8 removed");
+    CHECK(veclite_search_ex(h, 2, 2, 4, NULL, live, q, 1, NULL, NULL, 1, 0, 1, ids, sc, cnt) == VECLITE_E_DTYPE, "search int8 removed");
 }
 
 static void compare(const char *ctx, int64_t nq, int64_t k, const int64_t *ca, const int64_t *ia, const float *sa,
@@ -96,16 +96,16 @@ static void test_random(int trials) {
             fo[q] = (uint8_t)below(2);
             ft[q] = below(3);
         }
-        CHECK(vdb_encode(VDB_F16, x, n, dim, h, &bad) == VDB_OK, "encode f16");
+        CHECK(veclite_encode(VECLITE_F16, x, n, dim, h, &bad) == VECLITE_OK, "encode f16");
         for (int64_t i = 0; i < n * dim; i++) {
             dec[i] = (float)h[i];
             CHECK(dec[i] == (float)(_Float16)x[i], "encode must round like the C compiler's float->half");
         }
-        CHECK(vdb_search(dec, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ib, sb, cb) == VDB_OK, "f32 rc");
-        CHECK(vdb_search_ex(h, VDB_F16, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ia, sa, ca) == VDB_OK, "f16 rc");
+        CHECK(veclite_search(dec, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ib, sb, cb) == VECLITE_OK, "f32 rc");
+        CHECK(veclite_search_ex(h, VECLITE_F16, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ia, sa, ca) == VECLITE_OK, "f16 rc");
         compare("f16 == f32(decoded f16)", nq, k, ca, ia, sa, cb, ib, sb);
-        CHECK(vdb_search_ex(x, VDB_F32, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ia, sa, ca) == VDB_OK, "f32 ex rc");
-        CHECK(vdb_search(x, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ib, sb, cb) == VDB_OK, "f32 rc");
+        CHECK(veclite_search_ex(x, VECLITE_F32, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ia, sa, ca) == VECLITE_OK, "f32 ex rc");
+        CHECK(veclite_search(x, n, dim, tags, live, qs, nq, fo, ft, k, metric, nc, ib, sb, cb) == VECLITE_OK, "f32 rc");
         compare("search_ex(f32) == search", nq, k, ca, ia, sa, cb, ib, sb);
         free(x);
         free(qs);

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bench import F, I64, LIB, U8, check, ptr
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DIR = os.environ.get("VDB_SSD_DIR", os.path.join(ROOT, "scratch", "ssd"))
+DIR = os.environ.get("VECLITE_SSD_DIR", os.path.join(ROOT, "scratch", "ssd"))
 F_NOCACHE = 48
 CHUNK_BYTES = 64 << 20
 K = 10
@@ -77,8 +77,8 @@ def search_chunk(buf, rows, dim, storage, qs, k, live):
     ids = np.empty((nq, k), dtype=np.int64)
     sc = np.empty((nq, k), dtype=np.float32)
     cnt = np.zeros(nq, dtype=np.int64)
-    check(LIB.vdb_search_ex(buf.ctypes.data, 0 if storage == "f32" else 1, rows, dim, None, ptr(live, U8), ptr(qs, F), nq,
-                            None, None, k, 2, 16, ptr(ids, I64), ptr(sc, F), ptr(cnt, I64)), "vdb_search_ex")
+    check(LIB.veclite_search_ex(buf.ctypes.data, 0 if storage == "f32" else 1, rows, dim, None, ptr(live, U8), ptr(qs, F), nq,
+                            None, None, k, 2, 16, ptr(ids, I64), ptr(sc, F), ptr(cnt, I64)), "veclite_search_ex")
     return ids, sc, cnt
 
 

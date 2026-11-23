@@ -1,22 +1,23 @@
 import ctypes
 import os
+import sys
 
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LIB = ctypes.CDLL(os.environ.get("VDB_LIB") or os.path.join(ROOT, "build", "libvdb.dylib"))
+LIB = ctypes.CDLL(os.environ.get("VECLITE_LIB") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "libveclite." + ("dylib" if sys.platform == "darwin" else "so")))
 I, I32, P = ctypes.c_int64, ctypes.c_int32, ctypes.c_void_p
 SIGS = {
-    "vdb_open": [ctypes.c_char_p, I, I, I32, I, P],
-    "vdb_close": [I],
-    "vdb_append": [I, P, I, P],
-    "vdb_delete": [I, I],
-    "vdb_commit": [I, P],
-    "vdb_checkpoint": [I, P],
-    "vdb_reader_begin": [I, P],
-    "vdb_reader_end": [I, I],
-    "vdb_reader_search": [I, I, P, I, P, P, I, I32, I, P, P, P],
-    "vdb_info": [I, P],
+    "veclite_open": [ctypes.c_char_p, I, I, I32, I, P],
+    "veclite_close": [I],
+    "veclite_append": [I, P, I, P],
+    "veclite_delete": [I, I],
+    "veclite_commit": [I, P],
+    "veclite_checkpoint": [I, P],
+    "veclite_reader_begin": [I, P],
+    "veclite_reader_end": [I, I],
+    "veclite_reader_search": [I, I, P, I, P, P, I, I32, I, P, P, P],
+    "veclite_info": [I, P],
 }
 for name, args in SIGS.items():
     getattr(LIB, name).argtypes = args
@@ -41,12 +42,12 @@ def check(rc, what):
 class Store:
     def __init__(self, path, dim, extent_rows=0, storage="f32"):
         out = np.zeros(1, dtype=np.int64)
-        check(LIB.vdb_open(path.encode(), dim, extent_rows or max(1024, (64 << 20) // (dim * 4)), DTYPES[storage], 0, addr(out)), "open")
+        check(LIB.veclite_open(path.encode(), dim, extent_rows or max(1024, (64 << 20) // (dim * 4)), DTYPES[storage], 0, addr(out)), "open")
         self.h, self.dim = int(out[0]), dim
         self._id = np.zeros(1, dtype=np.int64)
 
     def close(self):
-        check(LIB.vdb_close(self.h), "close")
+        check(LIB.veclite_close(self.h), "close")
 
     def append_rows(self, vecs, tags):
         vecs = np.ascontiguousarray(vecs, dtype=np.float32)
@@ -54,20 +55,20 @@ class Store:
             raise ValueError("vecs must be (n, dim) with one tag per row")
         base, stride = vecs.ctypes.data, self.dim * 4
         for i, t in enumerate(tags):
-            check(LIB.vdb_append(self.h, base + i * stride, int(t), addr(self._id)), "append")
+            check(LIB.veclite_append(self.h, base + i * stride, int(t), addr(self._id)), "append")
 
     def delete(self, row):
-        check(LIB.vdb_delete(self.h, row), "delete")
+        check(LIB.veclite_delete(self.h, row), "delete")
 
     def commit(self):
-        check(LIB.vdb_commit(self.h, None), "commit")
+        check(LIB.veclite_commit(self.h, None), "commit")
 
     def checkpoint(self):
-        check(LIB.vdb_checkpoint(self.h, None), "checkpoint")
+        check(LIB.veclite_checkpoint(self.h, None), "checkpoint")
 
     def info(self):
         out = np.zeros(len(INFO), dtype=np.int64)
-        check(LIB.vdb_info(self.h, addr(out)), "info")
+        check(LIB.veclite_info(self.h, addr(out)), "info")
         return dict(zip(INFO, out.tolist()))
 
     def search(self, qs, k, filter_tags=None, nchunks=16, metric=0):
@@ -78,15 +79,15 @@ class Store:
             fo = (np.asarray(filter_tags) >= 0).astype(np.uint8)
             ft = np.ascontiguousarray(filter_tags, dtype=np.int64)
         r = np.zeros(1, dtype=np.int64)
-        check(LIB.vdb_reader_begin(self.h, addr(r)), "reader_begin")
+        check(LIB.veclite_reader_begin(self.h, addr(r)), "reader_begin")
         ids = np.empty((nq, k), dtype=np.int64)
         sc = np.empty((nq, k), dtype=np.float32)
         cnt = np.zeros(nq, dtype=np.int64)
         try:
-            check(LIB.vdb_reader_search(self.h, int(r[0]), addr(qs), nq, addr(fo), addr(ft), k, metric, nchunks,
+            check(LIB.veclite_reader_search(self.h, int(r[0]), addr(qs), nq, addr(fo), addr(ft), k, metric, nchunks,
                                         addr(ids), addr(sc), addr(cnt)), "reader_search")
         finally:
-            check(LIB.vdb_reader_end(self.h, int(r[0])), "reader_end")
+            check(LIB.veclite_reader_end(self.h, int(r[0])), "reader_end")
         return [(ids[q, : cnt[q]], sc[q, : cnt[q]]) for q in range(nq)]
 
 

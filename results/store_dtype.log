@@ -1,2 +1,0 @@
-dtype {'storage': 'f32', 'n': 50000, 'dim': 1536, 'ingest_rows_per_s': 64705.80746856996, 'checkpoint_s': 0.7617793750250712, 'main_file_mb': 336.018936, 'recall_vs_f32': 1.0, 'search_ms_per_q_batch1': 2.8896669391542673, 'search_ms_per_q_batch32': 0.3657382803794462}
-dtype {'storage': 'f16', 'n': 50000, 'dim': 1536, 'ingest_rows_per_s': 78137.83474989502, 'checkpoint_s': 0.6910882910015061, 'main_file_mb': 168.265208, 'recall_vs_f32': 1.0, 'search_ms_per_q_batch1': 1.8023339798673987, 'search_ms_per_q_batch32': 0.3539466233632993}

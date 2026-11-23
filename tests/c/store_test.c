@@ -4,7 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "vdb_store.h"
+#include "veclite_store.h"
 
 #define DIM 8
 #define EXT 4
@@ -13,7 +13,7 @@
 #define NREAD 3
 
 static int failures = 0, checks = 0;
-static int32_t storage = VDB_F32;
+static int32_t storage = VECLITE_F32;
 static long io_crashes = 0, idle_crashes = 0, restarts = 0, wal_over_ckpt = 0, lost_unacked = 0, searches = 0;
 
 #define CHECK(cond, ...)                                          \
@@ -42,7 +42,7 @@ static void vec_of(int64_t id, float *v) {
 }
 
 static void stored_form(float *v) {
-    if (storage == VDB_F16)
+    if (storage == VECLITE_F16)
         for (int d = 0; d < DIM; d++) v[d] = (float)(_Float16)v[d];
 }
 static int64_t tag_of(int64_t id) { return id % 5; }
@@ -86,10 +86,10 @@ static void check_view(int64_t db, int64_t r, int64_t mark, const char *ctx) {
     int64_t n = -1;
     state s;
     state_at(mark, &s);
-    int rc = vdb_reader_view(db, r, MAXROWS, live, tags, vecs, &n);
-    CHECK(rc == VDB_OK, "%s view rc %d", ctx, rc);
+    int rc = veclite_reader_view(db, r, MAXROWS, live, tags, vecs, &n);
+    CHECK(rc == VECLITE_OK, "%s view rc %d", ctx, rc);
     CHECK(n == s.n, "%s readerSnapshot rows %lld want %lld (mark %lld)", ctx, (long long)n, (long long)s.n, (long long)mark);
-    if (rc != VDB_OK || n != s.n) return;
+    if (rc != VECLITE_OK || n != s.n) return;
     for (int64_t i = 0; i < n; i++) {
         vec_of(i, want);
         stored_form(want);
@@ -104,11 +104,11 @@ static void check_view(int64_t db, int64_t r, int64_t mark, const char *ctx) {
     int64_t ft[2] = {below(5), below(5)}, k = 1 + below(6), ids[16], cnt[2];
     float sc[16], scores[2 * MAXROWS], cands[2 * MAXROWS];
     int32_t metric = (int32_t)below(2);
-    rc = vdb_reader_search(db, r, q, 2, fo, ft, k, metric, 1 + below(4), ids, sc, cnt);
+    rc = veclite_reader_search(db, r, q, 2, fo, ft, k, metric, 1 + below(4), ids, sc, cnt);
     searches++;
-    CHECK(rc == VDB_OK, "%s search rc %d", ctx, rc);
-    CHECK(vdb_scores(vecs, n, DIM, q, 2, metric, scores) == VDB_OK, "%s scores", ctx);
-    for (int qi = 0; qi < 2 && rc == VDB_OK; qi++) {
+    CHECK(rc == VECLITE_OK, "%s search rc %d", ctx, rc);
+    CHECK(veclite_scores(vecs, n, DIM, q, 2, metric, scores) == VECLITE_OK, "%s scores", ctx);
+    for (int qi = 0; qi < 2 && rc == VECLITE_OK; qi++) {
         int m = 0;
         for (int64_t i = 0; i < n; i++)
             if (live[i] && (!fo[qi] || tags[i] == ft[qi])) {
@@ -133,24 +133,24 @@ typedef struct {
 } world;
 
 static void reopen(world *w, const char *ctx) {
-    vdb_close(w->db);
+    veclite_close(w->db);
     w->db = 0;
-    CHECK(vdb_sim_crash(w->sim, rnd()) == VDB_OK, "crash");
-    int rc = vdb_open(NULL, DIM, EXT, storage, w->sim, &w->db);
-    CHECK(rc == VDB_OK, "%s reopen rc %d", ctx, rc);
-    if (rc != VDB_OK) {
+    CHECK(veclite_sim_crash(w->sim, rnd()) == VECLITE_OK, "crash");
+    int rc = veclite_open(NULL, DIM, EXT, storage, w->sim, &w->db);
+    CHECK(rc == VECLITE_OK, "%s reopen rc %d", ctx, rc);
+    if (rc != VECLITE_OK) {
         w->db = 0;
         return;
     }
-    int64_t info[VDB_INFO_LEN];
-    vdb_info(w->db, info);
-    int64_t rec = info[VDB_INFO_NTX];
+    int64_t info[VECLITE_INFO_LEN];
+    veclite_info(w->db, info);
+    int64_t rec = info[VECLITE_INFO_NTX];
     if (getenv("TRACE")) fprintf(stderr, "REOPEN %s rows %lld ntx %lld hdr %lld frames %lld salt %lld main %lld\n", ctx, (long long)info[0], (long long)info[1], (long long)info[3], (long long)info[4], (long long)info[5], (long long)info[6]);
-    wal_over_ckpt += info[VDB_INFO_HDR_TXN] > 0 && info[VDB_INFO_WAL_FRAMES] > 0;
+    wal_over_ckpt += info[VECLITE_INFO_HDR_TXN] > 0 && info[VECLITE_INFO_WAL_FRAMES] > 0;
     lost_unacked += rec < written;
     CHECK(rec >= acked, "%s ackedDurable recovered %lld < acked %lld", ctx, (long long)rec, (long long)acked);
     CHECK(rec <= written, "%s recovered %lld > written %lld", ctx, (long long)rec, (long long)written);
-    CHECK(info[VDB_INFO_PUBLISHED] == rec, "%s published", ctx);
+    CHECK(info[VECLITE_INFO_PUBLISHED] == rec, "%s published", ctx);
     while (nops > 0 && ops[nops - 1].txn > rec) nops--;
     written = rec < written ? rec : written;
     acked = written;
@@ -158,9 +158,9 @@ static void reopen(world *w, const char *ctx) {
     w->npend = 0;
     state_at(written, &w->cur);
     int64_t r;
-    if (vdb_reader_begin(w->db, &r) == VDB_OK) {
+    if (veclite_reader_begin(w->db, &r) == VECLITE_OK) {
         check_view(w->db, r, written, "recoveryAtomic");
-        vdb_reader_end(w->db, r);
+        veclite_reader_end(w->db, r);
     }
 }
 
@@ -169,19 +169,19 @@ static int run_workload(uint64_t seed, int steps) {
     nops = 0;
     written = acked = 0;
     world w = {0};
-    CHECK(vdb_sim_new(&w.sim) == VDB_OK, "sim");
-    CHECK(vdb_open(NULL, DIM, EXT, storage, w.sim, &w.db) == VDB_OK, "open");
+    CHECK(veclite_sim_new(&w.sim) == VECLITE_OK, "sim");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, w.sim, &w.db) == VECLITE_OK, "open");
     for (int i = 0; i < NREAD; i++) w.active[i] = -1;
     float v[DIM];
     for (int step = 0; step < steps && w.db; step++) {
-        if (below(5) == 0) vdb_sim_set_budget(w.sim, below(4) == 0 ? below(40) : below(4));
-        int64_t act = below(100), rc = VDB_OK, id;
+        if (below(5) == 0) veclite_sim_set_budget(w.sim, below(4) == 0 ? below(40) : below(4));
+        int64_t act = below(100), rc = VECLITE_OK, id;
         if (act < 35 && w.cur.n + w.npend < MAXROWS - 1 && w.npend < 60) {
             int64_t nid = w.cur.n;
             vec_of(nid, v);
-            rc = vdb_append(w.db, v, tag_of(nid), &id);
-            CHECK(rc != VDB_OK || id == nid, "append id %lld want %lld", (long long)id, (long long)nid);
-            if (rc == VDB_OK) {
+            rc = veclite_append(w.db, v, tag_of(nid), &id);
+            CHECK(rc != VECLITE_OK || id == nid, "append id %lld want %lld", (long long)id, (long long)nid);
+            if (rc == VECLITE_OK) {
                 w.pend_id[w.npend] = nid;
                 w.pend_del[w.npend++] = 0;
                 w.cur.live[nid] = 1;
@@ -190,14 +190,14 @@ static int run_workload(uint64_t seed, int steps) {
         } else if (act < 50 && w.npend < 60) {
             int64_t cand = w.cur.n ? below(w.cur.n) : 0;
             if (w.cur.n && w.cur.live[cand]) {
-                rc = vdb_delete(w.db, cand);
-                if (rc == VDB_OK) {
+                rc = veclite_delete(w.db, cand);
+                if (rc == VECLITE_OK) {
                     w.pend_id[w.npend] = cand;
                     w.pend_del[w.npend++] = 1;
                     w.cur.live[cand] = 0;
                 }
             } else if (w.cur.n) {
-                CHECK(vdb_delete(w.db, cand) == VDB_E_ID, "delete dead row must fail");
+                CHECK(veclite_delete(w.db, cand) == VECLITE_E_ID, "delete dead row must fail");
             }
         } else if (act < 68) {
             if (w.npend) {
@@ -206,68 +206,68 @@ static int run_workload(uint64_t seed, int steps) {
                 w.npend = 0;
             }
             int64_t txn = -1;
-            rc = vdb_commit(w.db, &txn);
-            if (rc == VDB_OK) {
+            rc = veclite_commit(w.db, &txn);
+            if (rc == VECLITE_OK) {
                 acked = written;
                 CHECK(txn == written, "commit txn %lld want %lld", (long long)txn, (long long)written);
             }
         } else if (act < 78) {
             if (w.npend == 0) {
-                int64_t before[VDB_INFO_LEN], after[VDB_INFO_LEN];
-                vdb_info(w.db, before);
-                rc = vdb_checkpoint(w.db, NULL);
-                vdb_info(w.db, after);
-                restarts += after[VDB_INFO_SALT] != before[VDB_INFO_SALT];
+                int64_t before[VECLITE_INFO_LEN], after[VECLITE_INFO_LEN];
+                veclite_info(w.db, before);
+                rc = veclite_checkpoint(w.db, NULL);
+                veclite_info(w.db, after);
+                restarts += after[VECLITE_INFO_SALT] != before[VECLITE_INFO_SALT];
             }
         } else if (act < 88) {
             int slot = (int)below(NREAD);
             if (w.active[slot] < 0) {
                 int64_t r;
-                rc = vdb_reader_begin(w.db, &r);
-                if (rc == VDB_OK) {
+                rc = veclite_reader_begin(w.db, &r);
+                if (rc == VECLITE_OK) {
                     w.active[slot] = r;
                     w.mark[slot] = acked;
                 }
             } else {
-                vdb_reader_end(w.db, w.active[slot]);
+                veclite_reader_end(w.db, w.active[slot]);
                 w.active[slot] = -1;
             }
         } else if (act < 92) {
-            vdb_sim_set_budget(w.sim, -1);
+            veclite_sim_set_budget(w.sim, -1);
             idle_crashes++;
             reopen(&w, "idle-crash");
             continue;
         }
         if (getenv("TRACE")) {
-            int64_t ti[VDB_INFO_LEN];
-            vdb_info(w.db, ti);
+            int64_t ti[VECLITE_INFO_LEN];
+            veclite_info(w.db, ti);
             fprintf(stderr, "step %d act %lld rc %lld npend %d cur.n %lld written %lld acked %lld | rows %lld ntx %lld pub %lld hdr %lld frames %lld salt %lld main %lld mut %lld\n", step, (long long)act, (long long)rc, w.npend, (long long)w.cur.n, (long long)written, (long long)acked,
-                    (long long)ti[0], (long long)ti[1], (long long)ti[2], (long long)ti[3], (long long)ti[4], (long long)ti[5], (long long)ti[6], (long long)vdb_sim_mutations(w.sim));
+                    (long long)ti[0], (long long)ti[1], (long long)ti[2], (long long)ti[3], (long long)ti[4], (long long)ti[5], (long long)ti[6], (long long)veclite_sim_mutations(w.sim));
         }
-        if (rc == VDB_E_IO) {
-            int64_t info[VDB_INFO_LEN];
-            vdb_info(w.db, info);
-            CHECK(info[VDB_INFO_POISONED] == 1, "io error must poison");
-            CHECK(vdb_commit(w.db, NULL) == VDB_E_STATE, "poisoned db must refuse writes");
+        if (rc == VECLITE_E_IO) {
+            int64_t info[VECLITE_INFO_LEN];
+            veclite_info(w.db, info);
+            CHECK(info[VECLITE_INFO_POISONED] == 1, "io error must poison");
+            CHECK(veclite_commit(w.db, NULL) == VECLITE_E_STATE, "poisoned db must refuse writes");
             io_crashes++;
             reopen(&w, "io-crash");
             continue;
         }
-        CHECK(rc == VDB_OK, "step %d act %lld rc %lld", step, (long long)act, (long long)rc);
-        vdb_sim_set_budget(w.sim, -1);
+        CHECK(rc == VECLITE_OK, "step %d act %lld rc %lld", step, (long long)act, (long long)rc);
+        veclite_sim_set_budget(w.sim, -1);
         for (int i = 0; i < NREAD; i++)
             if (w.active[i] >= 0) {
                 int64_t mark = -1;
-                vdb_reader_mark(w.db, w.active[i], &mark);
+                veclite_reader_mark(w.db, w.active[i], &mark);
                 CHECK(mark == w.mark[i], "reader mark %lld want %lld", (long long)mark, (long long)w.mark[i]);
                 check_view(w.db, w.active[i], w.mark[i], "readerSnapshot");
             }
-        int64_t info[VDB_INFO_LEN];
-        vdb_info(w.db, info);
-        CHECK(info[VDB_INFO_PUBLISHED] == acked && info[VDB_INFO_HDR_TXN] <= info[VDB_INFO_PUBLISHED], "publishedOrder");
+        int64_t info[VECLITE_INFO_LEN];
+        veclite_info(w.db, info);
+        CHECK(info[VECLITE_INFO_PUBLISHED] == acked && info[VECLITE_INFO_HDR_TXN] <= info[VECLITE_INFO_PUBLISHED], "publishedOrder");
     }
-    if (w.db) vdb_close(w.db);
-    vdb_sim_free(w.sim);
+    if (w.db) veclite_close(w.db);
+    veclite_sim_free(w.sim);
     return failures;
 }
 
@@ -277,54 +277,54 @@ static void test_api(void) {
     vec_of(0, v);
     memcpy(nanv, v, sizeof v);
     nanv[3] = NAN;
-    CHECK(vdb_open(NULL, DIM, EXT, storage, 0, &db) == VDB_E_NULL, "open null path");
-    CHECK(vdb_sim_new(NULL) == VDB_E_NULL, "sim null");
-    vdb_sim_new(&sim);
-    CHECK(vdb_open(NULL, 0, EXT, storage, sim, &db) == VDB_E_ARG, "create needs dim");
-    CHECK(vdb_open(NULL, -1, EXT, storage, sim, &db) == VDB_E_ARG, "neg dim");
-    CHECK(vdb_open(NULL, DIM, -1, storage, sim, &db) == VDB_E_ARG, "neg extent");
-    CHECK(vdb_open(NULL, DIM, EXT, storage, sim, NULL) == VDB_E_NULL, "null out");
-    CHECK(vdb_open(NULL, DIM, EXT, storage, sim, &db) == VDB_OK, "open");
-    CHECK(vdb_append(db, nanv, 0, &id) == VDB_E_DATA_NONFINITE, "nan row");
-    CHECK(vdb_append(db, NULL, 0, &id) == VDB_E_NULL, "null vec");
-    CHECK(vdb_append(db, v, 0, NULL) == VDB_E_NULL, "null id");
-    CHECK(vdb_delete(db, 0) == VDB_E_ID, "delete missing");
-    CHECK(vdb_delete(db, -1) == VDB_E_ID, "delete neg");
-    CHECK(vdb_append(db, v, 3, &id) == VDB_OK && id == 0, "append");
-    CHECK(vdb_delete(db, 0) == VDB_OK, "delete pending row");
-    CHECK(vdb_delete(db, 0) == VDB_E_ID, "double delete");
-    CHECK(vdb_checkpoint(db, NULL) == VDB_E_STATE, "checkpoint with pending");
-    CHECK(vdb_commit(db, NULL) == VDB_OK, "commit");
-    CHECK(vdb_reader_end(db, 0) == VDB_E_READER, "end inactive");
-    CHECK(vdb_reader_end(db, 99) == VDB_E_READER, "end out of range");
-    CHECK(vdb_reader_begin(db, NULL) == VDB_E_NULL, "begin null");
-    for (int i = 0; i < 64; i++) CHECK(vdb_reader_begin(db, &r) == VDB_OK, "begin %d", i);
-    CHECK(vdb_reader_begin(db, &r) == VDB_E_READER, "reader slots full");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, 0, &db) == VECLITE_E_NULL, "open null path");
+    CHECK(veclite_sim_new(NULL) == VECLITE_E_NULL, "sim null");
+    veclite_sim_new(&sim);
+    CHECK(veclite_open(NULL, 0, EXT, storage, sim, &db) == VECLITE_E_ARG, "create needs dim");
+    CHECK(veclite_open(NULL, -1, EXT, storage, sim, &db) == VECLITE_E_ARG, "neg dim");
+    CHECK(veclite_open(NULL, DIM, -1, storage, sim, &db) == VECLITE_E_ARG, "neg extent");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, sim, NULL) == VECLITE_E_NULL, "null out");
+    CHECK(veclite_open(NULL, DIM, EXT, storage, sim, &db) == VECLITE_OK, "open");
+    CHECK(veclite_append(db, nanv, 0, &id) == VECLITE_E_DATA_NONFINITE, "nan row");
+    CHECK(veclite_append(db, NULL, 0, &id) == VECLITE_E_NULL, "null vec");
+    CHECK(veclite_append(db, v, 0, NULL) == VECLITE_E_NULL, "null id");
+    CHECK(veclite_delete(db, 0) == VECLITE_E_ID, "delete missing");
+    CHECK(veclite_delete(db, -1) == VECLITE_E_ID, "delete neg");
+    CHECK(veclite_append(db, v, 3, &id) == VECLITE_OK && id == 0, "append");
+    CHECK(veclite_delete(db, 0) == VECLITE_OK, "delete pending row");
+    CHECK(veclite_delete(db, 0) == VECLITE_E_ID, "double delete");
+    CHECK(veclite_checkpoint(db, NULL) == VECLITE_E_STATE, "checkpoint with pending");
+    CHECK(veclite_commit(db, NULL) == VECLITE_OK, "commit");
+    CHECK(veclite_reader_end(db, 0) == VECLITE_E_READER, "end inactive");
+    CHECK(veclite_reader_end(db, 99) == VECLITE_E_READER, "end out of range");
+    CHECK(veclite_reader_begin(db, NULL) == VECLITE_E_NULL, "begin null");
+    for (int i = 0; i < 64; i++) CHECK(veclite_reader_begin(db, &r) == VECLITE_OK, "begin %d", i);
+    CHECK(veclite_reader_begin(db, &r) == VECLITE_E_READER, "reader slots full");
     float q[DIM] = {1};
     int64_t ids[4], cnt;
     float sc[4];
-    CHECK(vdb_reader_search(db, 0, q, 0, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VDB_E_BATCH, "search batch 0");
-    CHECK(vdb_reader_search(db, 0, q, 1, NULL, NULL, 0, 0, 1, ids, sc, &cnt) == VDB_E_K, "search k 0");
-    CHECK(vdb_reader_search(db, 0, NULL, 1, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VDB_E_NULL, "search null q");
-    CHECK(vdb_reader_search(db, 0, q, 1, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VDB_OK && cnt == 0, "search deleted row");
-    vdb_close(db);
-    int32_t drc = vdb_open(NULL, DIM + 1, EXT, storage, sim, &db);
-    CHECK(drc == VDB_E_DIM, "dim mismatch rc %d", drc);
-    drc = vdb_open(NULL, 0, 0, -1, sim, &db);
-    CHECK(drc == VDB_OK, "open existing with dim 0 rc %d", drc);
-    int64_t dinfo[VDB_INFO_LEN];
-    vdb_info(db, dinfo);
-    CHECK(dinfo[VDB_INFO_DTYPE] == storage, "stored dtype %lld want %d", (long long)dinfo[VDB_INFO_DTYPE], storage);
-    vdb_close(db);
-    CHECK(vdb_open(NULL, 0, 0, 1 - storage, sim, &db) == VDB_E_DTYPE, "dtype mismatch");
-    CHECK(vdb_open(NULL, 0, 0, 2, sim, &db) == VDB_E_DTYPE, "invalid storage (int8 removed)");
-    CHECK(vdb_open(NULL, 0, 0, -2, sim, &db) == VDB_E_DTYPE, "invalid storage neg");
-    CHECK(vdb_open(NULL, 0, 0, storage, sim, &db) == VDB_OK, "reopen same dtype");
+    CHECK(veclite_reader_search(db, 0, q, 0, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VECLITE_E_BATCH, "search batch 0");
+    CHECK(veclite_reader_search(db, 0, q, 1, NULL, NULL, 0, 0, 1, ids, sc, &cnt) == VECLITE_E_K, "search k 0");
+    CHECK(veclite_reader_search(db, 0, NULL, 1, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VECLITE_E_NULL, "search null q");
+    CHECK(veclite_reader_search(db, 0, q, 1, NULL, NULL, 2, 0, 1, ids, sc, &cnt) == VECLITE_OK && cnt == 0, "search deleted row");
+    veclite_close(db);
+    int32_t drc = veclite_open(NULL, DIM + 1, EXT, storage, sim, &db);
+    CHECK(drc == VECLITE_E_DIM, "dim mismatch rc %d", drc);
+    drc = veclite_open(NULL, 0, 0, -1, sim, &db);
+    CHECK(drc == VECLITE_OK, "open existing with dim 0 rc %d", drc);
+    int64_t dinfo[VECLITE_INFO_LEN];
+    veclite_info(db, dinfo);
+    CHECK(dinfo[VECLITE_INFO_DTYPE] == storage, "stored dtype %lld want %d", (long long)dinfo[VECLITE_INFO_DTYPE], storage);
+    veclite_close(db);
+    CHECK(veclite_open(NULL, 0, 0, 1 - storage, sim, &db) == VECLITE_E_DTYPE, "dtype mismatch");
+    CHECK(veclite_open(NULL, 0, 0, 2, sim, &db) == VECLITE_E_DTYPE, "invalid storage (int8 removed)");
+    CHECK(veclite_open(NULL, 0, 0, -2, sim, &db) == VECLITE_E_DTYPE, "invalid storage neg");
+    CHECK(veclite_open(NULL, 0, 0, storage, sim, &db) == VECLITE_OK, "reopen same dtype");
     float huge[DIM] = {70000.0f};
     int64_t hid;
-    CHECK(vdb_append(db, huge, 0, &hid) == (storage == VDB_F16 ? VDB_E_RANGE : VDB_OK), "f16 range on append");
-    vdb_close(db);
-    vdb_sim_free(sim);
+    CHECK(veclite_append(db, huge, 0, &hid) == (storage == VECLITE_F16 ? VECLITE_E_RANGE : VECLITE_OK), "f16 range on append");
+    veclite_close(db);
+    veclite_sim_free(sim);
 
     char path[] = "/tmp/vdb-store-test-XXXXXX";
     int fd = mkstemp(path);
@@ -332,39 +332,39 @@ static void test_api(void) {
     unlink(path);
     char wal[64];
     snprintf(wal, sizeof wal, "%s-wal", path);
-    CHECK(vdb_open(path, DIM, EXT, storage, 0, &db) == VDB_OK, "real open");
+    CHECK(veclite_open(path, DIM, EXT, storage, 0, &db) == VECLITE_OK, "real open");
     for (int64_t i = 0; i < 10; i++) {
         vec_of(i, v);
-        CHECK(vdb_append(db, v, tag_of(i), &id) == VDB_OK, "real append");
+        CHECK(veclite_append(db, v, tag_of(i), &id) == VECLITE_OK, "real append");
     }
-    CHECK(vdb_delete(db, 3) == VDB_OK && vdb_commit(db, NULL) == VDB_OK, "real commit");
-    int64_t info[VDB_INFO_LEN];
-    CHECK(vdb_checkpoint(db, NULL) == VDB_OK, "real checkpoint");
-    vdb_info(db, info);
-    CHECK(info[VDB_INFO_HDR_TXN] == 1 && info[VDB_INFO_WAL_FRAMES] == 0, "real checkpoint restarted wal");
-    vdb_close(db);
-    CHECK(vdb_open(path, DIM, EXT, storage, 0, &db) == VDB_OK, "real reopen");
-    vdb_info(db, info);
-    CHECK(info[VDB_INFO_ROWS] == 10 && info[VDB_INFO_NTX] == 1, "real reopen rows %lld", (long long)info[VDB_INFO_ROWS]);
-    vdb_reader_begin(db, &r);
+    CHECK(veclite_delete(db, 3) == VECLITE_OK && veclite_commit(db, NULL) == VECLITE_OK, "real commit");
+    int64_t info[VECLITE_INFO_LEN];
+    CHECK(veclite_checkpoint(db, NULL) == VECLITE_OK, "real checkpoint");
+    veclite_info(db, info);
+    CHECK(info[VECLITE_INFO_HDR_TXN] == 1 && info[VECLITE_INFO_WAL_FRAMES] == 0, "real checkpoint restarted wal");
+    veclite_close(db);
+    CHECK(veclite_open(path, DIM, EXT, storage, 0, &db) == VECLITE_OK, "real reopen");
+    veclite_info(db, info);
+    CHECK(info[VECLITE_INFO_ROWS] == 10 && info[VECLITE_INFO_NTX] == 1, "real reopen rows %lld", (long long)info[VECLITE_INFO_ROWS]);
+    veclite_reader_begin(db, &r);
     float q2[DIM];
     vec_of(3, q2);
-    CHECK(vdb_reader_search(db, r, q2, 1, NULL, NULL, 3, 0, 2, ids, sc, &cnt) == VDB_OK && cnt == 3 && ids[0] != 3, "real search skips deleted");
-    vdb_close(db);
+    CHECK(veclite_reader_search(db, r, q2, 1, NULL, NULL, 3, 0, 2, ids, sc, &cnt) == VECLITE_OK && cnt == 3 && ids[0] != 3, "real search skips deleted");
+    veclite_close(db);
     FILE *f = fopen(path, "r+b");
     fseek(f, 24, SEEK_SET);
     fputc(0x7f, f);
     fseek(f, 4096 + 24, SEEK_SET);
     fputc(0x7f, f);
     fclose(f);
-    CHECK(vdb_open(path, DIM, EXT, storage, 0, &db) == VDB_E_CORRUPT, "corrupt headers");
+    CHECK(veclite_open(path, DIM, EXT, storage, 0, &db) == VECLITE_E_CORRUPT, "corrupt headers");
     unlink(path);
     unlink(wal);
 }
 
 int main(int argc, char **argv) {
     int seeds = argc > 1 ? atoi(argv[1]) : 300;
-    storage = argc > 4 ? atoi(argv[4]) : VDB_F32;
+    storage = argc > 4 ? atoi(argv[4]) : VECLITE_F32;
     int steps = argc > 2 ? atoi(argv[2]) : 200;
     test_api();
     int first = argc > 3 ? atoi(argv[3]) : 1;

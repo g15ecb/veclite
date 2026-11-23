@@ -11,7 +11,7 @@ from bench import Table
 from store_api import Store, remove_db
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DIR = os.environ.get("VDB_BENCH_DIR", os.path.join(ROOT, "scratch", "benchdb"))
+DIR = os.environ.get("VECLITE_BENCH_DIR", os.path.join(ROOT, "scratch", "benchdb"))
 RNG = np.random.default_rng(3)
 
 

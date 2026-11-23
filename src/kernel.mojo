@@ -37,15 +37,15 @@ comptime MAX_ELEMS: Int64 = 1 << 42
 comptime MAX_CHUNKS: Int64 = 4096
 comptime MAX_BATCH: Int64 = 4096
 
-comptime MUTANT_NO_TIE_BREAK = get_defined_bool["VDB_MUTANT_NO_TIE_BREAK"]()
-comptime MUTANT_POST_FILTER = get_defined_bool["VDB_MUTANT_POST_FILTER"]()
-comptime MUTANT_LOCAL_K_MINUS_ONE = get_defined_bool["VDB_MUTANT_LOCAL_K_MINUS_ONE"]()
-comptime MUTANT_QUERY_MIX = get_defined_bool["VDB_MUTANT_QUERY_MIX"]()
+comptime MUTANT_NO_TIE_BREAK = get_defined_bool["VECLITE_MUTANT_NO_TIE_BREAK"]()
+comptime MUTANT_POST_FILTER = get_defined_bool["VECLITE_MUTANT_POST_FILTER"]()
+comptime MUTANT_LOCAL_K_MINUS_ONE = get_defined_bool["VECLITE_MUTANT_LOCAL_K_MINUS_ONE"]()
+comptime MUTANT_QUERY_MIX = get_defined_bool["VECLITE_MUTANT_QUERY_MIX"]()
 
 comptime W = simd_width_of[DType.float32]()
 comptime V = SIMD[DType.float32, W]
-comptime QT = get_defined_int["VDB_QT", 4]()
-comptime RT = get_defined_int["VDB_RT", 4]()
+comptime QT = get_defined_int["VECLITE_QT", 4]()
+comptime RT = get_defined_int["VECLITE_RT", 4]()
 comptime BLOCK_BYTES = 1 << 18
 
 comptime FPtr = Pointer[Float32, ImmUntrackedOrigin]
@@ -331,13 +331,13 @@ def encode_row(dtype: Int32, src: FPtr, dim: Int, dst: Int) -> Int32:
     return OK
 
 
-@export("vdb_abi_version")
-def vdb_abi_version() abi("C") -> Int32:
+@export("veclite_abi_version")
+def veclite_abi_version() abi("C") -> Int32:
     return 4
 
 
-@export("vdb_encode")
-def vdb_encode(dtype: Int32, src: Int, n: Int64, dim: Int64, dst: Int, bad_row: Int) abi("C") -> Int32:
+@export("veclite_encode")
+def veclite_encode(dtype: Int32, src: Int, n: Int64, dim: Int64, dst: Int, bad_row: Int) abi("C") -> Int32:
     var st = check_dtype(dtype)
     if st == OK:
         st = check_shape(src, n, dim)
@@ -355,8 +355,8 @@ def vdb_encode(dtype: Int32, src: Int, n: Int64, dim: Int64, dst: Int, bad_row: 
     return OK
 
 
-@export("vdb_validate_rows")
-def vdb_validate_rows(data_addr: Int, n: Int64, dim: Int64, metric: Int32, bad_row_addr: Int) abi("C") -> Int32:
+@export("veclite_validate_rows")
+def veclite_validate_rows(data_addr: Int, n: Int64, dim: Int64, metric: Int32, bad_row_addr: Int) abi("C") -> Int32:
     var st = check_shape(data_addr, n, dim)
     if st == OK and bad_row_addr == 0:
         st = E_NULL
@@ -375,8 +375,8 @@ def vdb_validate_rows(data_addr: Int, n: Int64, dim: Int64, metric: Int32, bad_r
     return OK
 
 
-@export("vdb_scores")
-def vdb_scores(
+@export("veclite_scores")
+def veclite_scores(
     data_addr: Int, n: Int64, dim: Int64, queries_addr: Int, nq: Int64, metric: Int32, out_addr: Int
 ) abi("C") -> Int32:
     var st = check_shape(data_addr, n, dim)
@@ -402,21 +402,21 @@ def vdb_scores(
     return st
 
 
-@export("vdb_search")
-def vdb_search(
+@export("veclite_search")
+def veclite_search(
     data_addr: Int, n: Int64, dim: Int64, tags_addr: Int, live_addr: Int,
     queries_addr: Int, nq: Int64, filter_on_addr: Int, filter_tags_addr: Int,
     k: Int64, metric: Int32, nchunks: Int64,
     out_ids_addr: Int, out_scores_addr: Int, out_counts_addr: Int,
 ) abi("C") -> Int32:
-    return vdb_search_ex(
+    return veclite_search_ex(
         data_addr, F32, n, dim, tags_addr, live_addr, queries_addr, nq, filter_on_addr, filter_tags_addr,
         k, metric, nchunks, out_ids_addr, out_scores_addr, out_counts_addr,
     )
 
 
-@export("vdb_search_ex")
-def vdb_search_ex(
+@export("veclite_search_ex")
+def veclite_search_ex(
     data_addr: Int, dtype: Int32, n: Int64, dim: Int64, tags_addr: Int, live_addr: Int,
     queries_addr: Int, nq: Int64, filter_on_addr: Int, filter_tags_addr: Int,
     k: Int64, metric: Int32, nchunks: Int64,

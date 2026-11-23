@@ -1,8 +1,8 @@
 from std.ffi import external_call, c_int
-from std.sys import get_defined_bool
+from std.sys import get_defined_bool, CompilationTarget
 from std.utils.numerics import isfinite
 from std.memory.alloc import unsafe_alloc
-from vdb import vdb_scores, vdb_validate_rows, vdb_abi_version, OK, E_NULL, E_DIM, E_K, E_BATCH, E_DATA_NONFINITE, MAX_DIM, MAX_K, MAX_BATCH, bstep, vdb_search, fptr, fmut, iptr, imut, bptr
+from kernel import veclite_scores, veclite_validate_rows, veclite_abi_version, OK, E_NULL, E_DIM, E_K, E_BATCH, E_DATA_NONFINITE, MAX_DIM, MAX_K, MAX_BATCH, bstep, veclite_search, fptr, fmut, iptr, imut, bptr
 
 comptime E_IO: Int32 = -20
 comptime E_CORRUPT: Int32 = -21
@@ -11,13 +11,13 @@ comptime E_ID: Int32 = -23
 comptime E_READER: Int32 = -24
 comptime E_ARG: Int32 = -25
 
-comptime MUTANT_ACK_BEFORE_SYNC = get_defined_bool["VDB_MUTANT_ACK_BEFORE_SYNC"]()
-comptime MUTANT_CKPT_IGNORES_READERS = get_defined_bool["VDB_MUTANT_CKPT_IGNORES_READERS"]()
-comptime MUTANT_NO_CHAIN = get_defined_bool["VDB_MUTANT_NO_CHAIN"]()
-comptime MUTANT_RESTART_EARLY = get_defined_bool["VDB_MUTANT_RESTART_EARLY"]()
-comptime MUTANT_SKIP_DATA_SYNC = get_defined_bool["VDB_MUTANT_SKIP_DATA_SYNC"]()
-comptime MUTANT_UNSYNCED_RESTART_HDR = get_defined_bool["VDB_MUTANT_UNSYNCED_RESTART_HDR"]()
-comptime MUTANT_NO_RECOVERY_TRUNCATE = get_defined_bool["VDB_MUTANT_NO_RECOVERY_TRUNCATE"]()
+comptime MUTANT_ACK_BEFORE_SYNC = get_defined_bool["VECLITE_MUTANT_ACK_BEFORE_SYNC"]()
+comptime MUTANT_CKPT_IGNORES_READERS = get_defined_bool["VECLITE_MUTANT_CKPT_IGNORES_READERS"]()
+comptime MUTANT_NO_CHAIN = get_defined_bool["VECLITE_MUTANT_NO_CHAIN"]()
+comptime MUTANT_RESTART_EARLY = get_defined_bool["VECLITE_MUTANT_RESTART_EARLY"]()
+comptime MUTANT_SKIP_DATA_SYNC = get_defined_bool["VECLITE_MUTANT_SKIP_DATA_SYNC"]()
+comptime MUTANT_UNSYNCED_RESTART_HDR = get_defined_bool["VECLITE_MUTANT_UNSYNCED_RESTART_HDR"]()
+comptime MUTANT_NO_RECOVERY_TRUNCATE = get_defined_bool["VECLITE_MUTANT_NO_RECOVERY_TRUNCATE"]()
 
 comptime MAIN_MAGIC: UInt64 = 0x314E49414D424456
 comptime WAL_MAGIC: UInt64 = 0x31304C4157424456
@@ -32,6 +32,8 @@ comptime MAX_EXTENT_ROWS: Int64 = 1 << 24
 comptime APPEND: UInt64 = 1
 comptime DELETE: UInt64 = 2
 comptime MAIN = 0
+comptime O_RDWR_CREAT = 0x202 if CompilationTarget.is_macos() else 0x42
+comptime F_FULLFSYNC = 51
 comptime WALF = 1
 
 comptime U64Mut = Pointer[UInt64, MutUntrackedOrigin]
@@ -296,8 +298,9 @@ struct Db(Movable):
         if self.sim != 0:
             self.simp()[].sync(f)
             return True
-        if external_call["fcntl", c_int, num_fixed_args=2](c_int(self.fds[f]), c_int(51)) == 0:
-            return True
+        comptime if CompilationTarget.is_macos():
+            if external_call["fcntl", c_int, num_fixed_args=2](c_int(self.fds[f]), c_int(F_FULLFSYNC)) == 0:
+                return True
         if external_call["fsync", c_int](c_int(self.fds[f])) == 0:
             return True
         self.poisoned = True
@@ -455,8 +458,8 @@ def usable(h: Int) -> Int32:
     return E_STATE if dbp(h)[].poisoned else OK
 
 
-@export("vdb_sim_new")
-def vdb_sim_new(out_addr: Int) abi("C") -> Int32:
+@export("veclite_sim_new")
+def veclite_sim_new(out_addr: Int) abi("C") -> Int32:
     if out_addr == 0:
         return E_NULL
     var p = unsafe_alloc[Sim](1)
@@ -465,8 +468,8 @@ def vdb_sim_new(out_addr: Int) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_sim_free")
-def vdb_sim_free(sim: Int) abi("C") -> Int32:
+@export("veclite_sim_free")
+def veclite_sim_free(sim: Int) abi("C") -> Int32:
     if sim == 0:
         return E_NULL
     var p = Pointer[Sim, MutUntrackedOrigin](unsafe_from_address=sim)
@@ -475,21 +478,21 @@ def vdb_sim_free(sim: Int) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_sim_set_budget")
-def vdb_sim_set_budget(sim: Int, budget: Int64) abi("C") -> Int32:
+@export("veclite_sim_set_budget")
+def veclite_sim_set_budget(sim: Int, budget: Int64) abi("C") -> Int32:
     if sim == 0:
         return E_NULL
     Pointer[Sim, MutUntrackedOrigin](unsafe_from_address=sim)[].budget = Int(budget)
     return OK
 
 
-@export("vdb_sim_mutations")
-def vdb_sim_mutations(sim: Int) abi("C") -> Int64:
+@export("veclite_sim_mutations")
+def veclite_sim_mutations(sim: Int) abi("C") -> Int64:
     return -1 if sim == 0 else Int64(Pointer[Sim, MutUntrackedOrigin](unsafe_from_address=sim)[].mutations)
 
 
-@export("vdb_sim_crash")
-def vdb_sim_crash(sim: Int, seed: UInt64) abi("C") -> Int32:
+@export("veclite_sim_crash")
+def veclite_sim_crash(sim: Int, seed: UInt64) abi("C") -> Int32:
     if sim == 0:
         return E_NULL
     var s = Pointer[Sim, MutUntrackedOrigin](unsafe_from_address=sim)
@@ -506,7 +509,7 @@ def open_fd(path: Int, suffix: Bool) -> Int:
     copy_bytes(Int(b.unsafe_ptr()), path, n)
     if suffix:
         copy_bytes(Int(b.unsafe_ptr()) + n, Int("-wal".ptr()), 4)
-    var fd = Int(external_call["open", c_int, num_fixed_args=2](Int(b.unsafe_ptr()), c_int(0x202), c_int(0o644)))
+    var fd = Int(external_call["open", c_int, num_fixed_args=2](Int(b.unsafe_ptr()), c_int(O_RDWR_CREAT), c_int(0o644)))
     _ = b^
     return fd
 
@@ -667,8 +670,8 @@ def recover_wal(mut db: Db) -> Int32:
     return OK
 
 
-@export("vdb_open")
-def vdb_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim: Int, out_db: Int) abi("C") -> Int32:
+@export("veclite_open")
+def veclite_open(path: Int, dim: Int64, extent_rows: Int64, storage: Int32, sim: Int, out_db: Int) abi("C") -> Int32:
     if out_db == 0 or (path == 0 and sim == 0):
         return E_NULL
     st64(out_db, 0)
@@ -715,8 +718,8 @@ def close_fds(db: Db):
             _ = external_call["close", c_int](c_int(f))
 
 
-@export("vdb_close")
-def vdb_close(h: Int) abi("C") -> Int32:
+@export("veclite_close")
+def veclite_close(h: Int) abi("C") -> Int32:
     if h == 0:
         return E_NULL
     var p = dbp(h)
@@ -727,8 +730,8 @@ def vdb_close(h: Int) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_append")
-def vdb_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
+@export("veclite_append")
+def veclite_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
     var st = usable(h)
     if st != OK:
         return st
@@ -753,8 +756,8 @@ def vdb_append(h: Int, vec: Int, tag: Int64, out_id: Int) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_delete")
-def vdb_delete(h: Int, id: Int64) abi("C") -> Int32:
+@export("veclite_delete")
+def veclite_delete(h: Int, id: Int64) abi("C") -> Int32:
     var st = usable(h)
     if st != OK:
         return st
@@ -768,8 +771,8 @@ def vdb_delete(h: Int, id: Int64) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_commit")
-def vdb_commit(h: Int, out_txn: Int) abi("C") -> Int32:
+@export("veclite_commit")
+def veclite_commit(h: Int, out_txn: Int) abi("C") -> Int32:
     var st = usable(h)
     if st != OK:
         return st
@@ -825,8 +828,8 @@ def ckpt_target(db: Db) -> Int:
     return t
 
 
-@export("vdb_checkpoint")
-def vdb_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
+@export("veclite_checkpoint")
+def veclite_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
     var st = usable(h)
     if st != OK:
         return st
@@ -892,8 +895,8 @@ def vdb_checkpoint(h: Int, out_txn: Int) abi("C") -> Int32:
     return OK
 
 
-@export("vdb_reader_begin")
-def vdb_reader_begin(h: Int, out_r: Int) abi("C") -> Int32:
+@export("veclite_reader_begin")
+def veclite_reader_begin(h: Int, out_r: Int) abi("C") -> Int32:
     var st = usable(h)
     if st != OK:
         return st
@@ -918,16 +921,16 @@ def reader_ok(h: Int, r: Int64) -> Int32:
     return OK if r >= 0 and r < MAX_READERS and dbp(h)[].r_active[Int(r)] else E_READER
 
 
-@export("vdb_reader_end")
-def vdb_reader_end(h: Int, r: Int64) abi("C") -> Int32:
+@export("veclite_reader_end")
+def veclite_reader_end(h: Int, r: Int64) abi("C") -> Int32:
     var st = reader_ok(h, r)
     if st == OK:
         dbp(h)[].r_active[Int(r)] = False
     return st
 
 
-@export("vdb_reader_mark")
-def vdb_reader_mark(h: Int, r: Int64, out_mark: Int) abi("C") -> Int32:
+@export("veclite_reader_mark")
+def veclite_reader_mark(h: Int, r: Int64, out_mark: Int) abi("C") -> Int32:
     var st = reader_ok(h, r)
     if st == OK and out_mark == 0:
         st = E_NULL
@@ -969,8 +972,8 @@ def make_view(db: Db, r: Int) -> View:
     return View(live^, n, tail, 0, 0)
 
 
-@export("vdb_reader_view")
-def vdb_reader_view(h: Int, r: Int64, cap: Int64, out_live: Int, out_tags: Int, out_vecs: Int, out_n: Int) abi("C") -> Int32:
+@export("veclite_reader_view")
+def veclite_reader_view(h: Int, r: Int64, cap: Int64, out_live: Int, out_tags: Int, out_vecs: Int, out_n: Int) abi("C") -> Int32:
     var st = reader_ok(h, r)
     if st != OK:
         return st
@@ -1016,8 +1019,8 @@ def tail_start(db: Db, r: Int) -> Int:
     return len(db.a_tag)
 
 
-@export("vdb_reader_search")
-def vdb_reader_search(
+@export("veclite_reader_search")
+def veclite_reader_search(
     h: Int, r: Int64, queries: Int, nq: Int64, filter_on: Int, filter_tags: Int,
     k: Int64, metric: Int32, nchunks: Int64, out_ids: Int, out_scores: Int, out_counts: Int,
 ) abi("C") -> Int32:
@@ -1061,7 +1064,7 @@ def vdb_reader_search(
             var a = tail_start(db[], Int(r))
             data = Int(db[].a_enc.unsafe_ptr()) + a * db[].enc_bytes()
             tags = Int(db[].a_tag.unsafe_ptr()) + a * 8
-        st = vdb_search_ex(
+        st = veclite_search_ex(
             data, db[].dtype, Int64(n), Int64(dim), tags, Int(v.live.unsafe_ptr()) + lo, queries, nq,
             filter_on, filter_tags, k, metric, nchunks, Int(e_ids.unsafe_ptr()), Int(e_sc.unsafe_ptr()), Int(e_cnt.unsafe_ptr()),
         )
@@ -1082,12 +1085,12 @@ def vdb_reader_search(
     return st
 
 
-@export("vdb_info")
-def vdb_info(h: Int, dst: Int) abi("C") -> Int32:
+@export("veclite_info")
+def veclite_info(h: Int, dst: Int) abi("C") -> Int32:
     if h == 0 or dst == 0:
         return E_NULL
     var db = dbp(h)
-    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype)]
+    var vals: List[Int] = [db[].rows, db[].ntx, db[].published, db[].hdr_txn, len(db[].f_txn), Int(db[].salt), db[].main_rows, 1 if db[].poisoned else 0, Int(db[].dtype), db[].dim]
     for i in range(len(vals)):
         st64(dst + i * 8, UInt64(vals[i]))
     return OK
